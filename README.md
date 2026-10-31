@@ -1,8 +1,8 @@
 # iptest
 
-A cross-platform IP inspection command-line tool for personal use. It prioritizes the proxy's public egress IP and displays local interface IP addresses, the public egress IP, its estimated location, and a brief reputation assessment in the terminal.
+A cross-platform IP inspection command-line tool for personal use. It prioritizes the selected proxy's public egress IP and displays local interface addresses and egress results in the terminal. Estimated location and brief reputation lookups are planned for subsequent milestones.
 
-> Project status: development environment setup. The Go module is initialized, but the repository does not yet contain the CLI implementation or an application executable. The inspection commands, proxy integration, and application platform support described below remain planned.
+> Project status: initial egress inspection. The CLI reads local interface addresses and detects public IPv4/IPv6 egress through an explicit proxy, environment proxy, or the current system route. Geolocation, reputation lookups, saved configuration, and desktop system proxy discovery remain planned. Missing features are displayed as `Unknown`, not successful checks.
 
 ## Goals
 
@@ -15,50 +15,64 @@ A cross-platform IP inspection command-line tool for personal use. It prioritize
 
 ## Output Design
 
-The following example illustrates the output format. The addresses and location are sample data, not actual inspection results:
+The following example illustrates a successful `--family ipv4` inspection in the current milestone. Addresses are sample data, not actual inspection results:
 
 ```text
 Local interface IP: 192.168.1.20 (Ethernet)
-Public egress IP: 203.0.113.10
-Estimated location: Japan / Tokyo Metropolis / Tokyo
-IP reputation: No known risk records found
+Public egress IP (IPv4): 203.0.113.10
+Estimated location (IPv4): Unknown (not implemented)
+IP reputation (IPv4): Unknown (not implemented)
 ```
 
 Output rules:
 
 - Enumerate non-loopback addresses on active interfaces. List multiple interfaces by name; virtual interfaces may be included.
-- Check IPv4 and IPv6 separately and show the location and reputation associated with each observed egress IP.
+- Check IPv4 and IPv6 separately. The default is `--family both`, which runs the two probes concurrently and prints results in IPv4/IPv6 order. Use `--family ipv4` or `--family ipv6` to request only one.
+- Exclude unspecified, multicast, loopback, and link-local interface addresses. Private LAN and unique-local IPv6 addresses are retained.
+- Show geolocation and reputation as `Unknown (not implemented)` until those lookups are added. Future lookups will use each observed IP explicitly.
 - Display "Unknown" for missing location levels. Geolocation estimates the location of the IP's network egress.
 - Write normal results to standard output and errors to standard error. Use exit codes to indicate execution status.
 - If a location or reputation lookup fails, retain any IP addresses already obtained and display "Unknown" with a brief reason for the failed field.
 
 ## Proxy Selection
 
-Planned precedence:
+Current precedence for HTTPS egress probes:
 
 ```text
 Command-line --proxy
-    > Saved tool configuration (if configured)
-    > Proxy environment variables
-    > Recognized static system proxy settings
+    > HTTPS_PROXY / https_proxy
+    > ALL_PROXY / all_proxy
     > Current system network path
 ```
 
-Behavior:
+Uppercase environment variables take precedence over their lowercase variants. `HTTP_PROXY` / `http_proxy` are supported for HTTP requests, but the current public probes use HTTPS and therefore need `HTTPS_PROXY` or `ALL_PROXY`.
+
+Saved proxy configuration and desktop static proxy discovery are future work. This version does not read Windows desktop proxy settings, GNOME/KDE settings, or macOS system proxy settings. Set `--proxy` or the relevant environment variable when using a proxy that is configured only in a desktop application. Without a selected HTTPS proxy, the CLI writes a short explanation to standard error and uses the current system route, which may include a TUN interface or VPN.
+
+Current behavior and future requirements:
 
 1. Explicitly support proxy environment variables: select `HTTP_PROXY` or `HTTPS_PROXY` according to the request scheme, with `ALL_PROXY` as a fallback. Handle the corresponding lowercase variables and `NO_PROXY` exceptions.
 2. Honor a manually selected proxy without allowing environment-based bypass rules to change the inspection path unexpectedly.
-3. In automatic mode, report when a bypass rule causes a target to skip the selected proxy. Do not present a direct connection's result as a proxy egress IP. Ask the user to specify a proxy for complex PAC configurations or system settings that are not yet supported.
+3. In automatic mode, refuse a request when `NO_PROXY` / `no_proxy` excludes a target that would otherwise use the selected proxy. Do not issue a direct request or present it as a proxy egress IP. To use that proxy for the target, specify `--proxy` explicitly. PAC configurations are not supported yet.
 4. Report connection failures, authentication failures, and timeouts for the selected proxy. Do not silently fall back to a direct connection.
 5. If no application-level proxy is found, use the current system network path, which may still traverse a TUN interface or VPN.
-6. Apply the same proxy policy to egress detection and subsequent lookups. Once an egress IP is obtained, explicitly query that IP in both geolocation and reputation requests.
+6. Use the same client and proxy policy for both egress families. Future geolocation and reputation requests must explicitly query the IP already obtained.
 7. Preserve differences when targets or inspection times produce different egress IPs. Do not combine one IP's location with another IP's reputation.
 
-Static system proxy settings require platform-specific integration. The Go standard library does not automatically cover all desktop proxy settings, and `ALL_PROXY` requires explicit handling.
+HTTP and HTTPS proxies support CONNECT for HTTPS targets. `socks5://` and `socks5h://` both send the target hostname to the proxy in this Go implementation. A correct public IP result does not establish that all system traffic or DNS uses the same path.
 
-## Planned Commands
+## Build and Run
 
-The following interface is planned and will become usable after implementation. These examples assume the executable is on `PATH`:
+Build with the project-local development environment on Windows:
+
+```powershell
+.\scripts\go.ps1 build -o bin/iptest.exe ./cmd/iptest
+.\bin\iptest.exe --help
+```
+
+On a host with a suitable Go environment, the application can be built with `go build -o bin/iptest ./cmd/iptest`. The repository's temporary environment scripts currently support Windows only.
+
+The following examples assume the executable is on `PATH`:
 
 ```sh
 # Select the inspection path automatically
@@ -69,9 +83,34 @@ iptest --proxy http://127.0.0.1:7890
 
 # Explicitly select a SOCKS5 proxy
 iptest --proxy socks5://127.0.0.1:1080
+
+# Inspect only IPv4, with a per-request timeout
+iptest --proxy http://127.0.0.1:7890 --family ipv4 --timeout 5s
+
+# Inspect only IPv6
+iptest --family ipv6
+
+# Print help or the development version without network requests
+iptest --help
+iptest --version
 ```
 
 To run from the current directory, use `.\iptest.exe` on Windows or `./iptest` on Linux/macOS.
+
+The current endpoints are `https://api.ipify.org?format=json` for IPv4 and `https://api6.ipify.org?format=json` for IPv6. A failed or unavailable IPv6 probe remains separate from a successful IPv4 result; the program does not substitute IPv4 for IPv6.
+
+Responses are limited to 4 KiB, must contain one JSON value with a valid IP of the requested family, and are checked against private and non-public special-purpose ranges. These checks use the [IANA IPv4](https://www.iana.org/assignments/iana-ipv4-special-registry/) and [IPv6 special-purpose registries](https://www.iana.org/assignments/iana-ipv6-special-registry/); they do not establish live route reachability or IP reputation.
+
+Exit codes:
+
+| Code | Meaning |
+| --- | --- |
+| `0` | All requested egress families and local interface enumeration succeeded |
+| `1` | Runtime failure or partial results, including an unavailable requested address family |
+| `2` | Invalid arguments or proxy configuration |
+| `130` | Inspection canceled with Ctrl+C |
+
+With the default `both`, an IPv4-only connection can produce useful IPv4 output and exit `1` because IPv6 failed. Use `--family ipv4` when only IPv4 is required. Location and reputation placeholders do not change the exit status in this milestone.
 
 The local configuration and API key formats will be defined when the configuration module is implemented. The local configuration patterns in `.gitignore` reserve filenames for future use; they do not mean that automatic loading is already supported.
 
@@ -85,30 +124,32 @@ The local configuration and API key formats will be defined when the configurati
 
 "No known risk records found" does not guarantee that every website will accept the IP. VPN/proxy use or a hosting-network classification alone does not establish abuse.
 
-## Candidate Data Sources
+## Data Sources
 
-| Purpose | Candidate | Planned Integration |
+| Purpose | Source | Status |
 | --- | --- | --- |
-| Public egress detection | [ipify](https://www.ipify.org/) | HTTPS IP echo, with separate IPv4/IPv6 checks |
-| Estimated geolocation | [ipwhois](https://ipwhois.io/documentation) | Free endpoint without an API key for country, state/province, and city |
-| Abuse reputation | [AbuseIPDB](https://docs.abuseipdb.com/) | Lookup endpoints using the user's own free API key |
+| Public egress detection | [ipify](https://www.ipify.org/) | Implemented: HTTPS IP echo, with separate IPv4/IPv6 checks |
+| Estimated geolocation | [ipwhois](https://ipwhois.io/documentation) | Planned: free endpoint without an API key for country, state/province, and city |
+| Abuse reputation | [AbuseIPDB](https://docs.abuseipdb.com/) | Planned: lookup endpoints using the user's own free API key |
 
 Use separate adapters for data sources and handle timeouts, caching, rate limits, and missing fields. Service limits and capabilities follow each provider's current documentation. Lookup services receive the queried IP; keep API keys and proxy credentials in local configuration and redact them from logs.
 
 ## Platforms and Technology
 
-The planned implementation uses Go, favoring the standard library and pure Go dependencies to minimize runtime and system-library requirements. Go is a development dependency: users of a compiled `iptest` executable will not need to install Go.
+The implementation uses Go and the standard library, with no external Go modules. Go is a development dependency: users of a compiled `iptest` executable do not need to install Go.
 
 | Platform | Planned Deliverable | Verification Status |
 | --- | --- | --- |
-| Windows | `iptest.exe` for the target CPU architecture | Not yet implemented or verified |
-| Ubuntu | Linux executable for the target CPU architecture | Not yet implemented or verified |
-| Arch Linux | Linux executable for the target CPU architecture | Not yet implemented or verified |
-| CachyOS | Linux executable for the target CPU architecture | Not yet implemented or verified |
-| macOS | Intel and Apple Silicon executables | Not yet implemented or verified |
+| Windows | amd64 and arm64 executables | amd64 build, offline CLI smoke checks, and local fixture tests passed; arm64 cross-build only |
+| Ubuntu | Linux executable for the target CPU architecture | Linux amd64/arm64 cross-builds passed; distribution runtime verification pending |
+| Arch Linux | Linux executable for the target CPU architecture | Linux cross-builds passed; distribution runtime verification pending |
+| CachyOS | Linux executable for the target CPU architecture | Linux cross-builds passed; distribution runtime verification pending |
+| macOS | Intel and Apple Silicon executables | amd64/arm64 cross-builds passed; runtime verification pending |
 | Android | Termux as the initial approach | Future evaluation |
 
 The goal is to share Linux builds across distributions with the same CPU architecture, while verifying execution on each distribution. Android requires separate work on interface enumeration, permissions, and proxy behavior.
+
+Local build artifacts are written to the ignored `bin` directory. Builds verified in this milestone are `iptest.exe`, `iptest-windows-arm64.exe`, `iptest-linux-amd64`, `iptest-linux-arm64`, `iptest-darwin-amd64`, and `iptest-darwin-arm64`. Linux/macOS binaries copied from Windows may need their executable permission set with `chmod +x` on the target host.
 
 ## Workspace-local Development Environment
 
@@ -148,7 +189,7 @@ Always invoke Go through the project launcher:
 .\scripts\go.ps1 env GOROOT GOPATH GOCACHE GOMODCACHE GOTMPDIR GOENV GOTOOLCHAIN GOTELEMETRY
 ```
 
-Once source packages are added, use the same launcher for formatting, building, and validation:
+Use the same launcher for formatting, building, and validation:
 
 ```powershell
 .\scripts\go.ps1 fmt ./...
@@ -157,7 +198,7 @@ Once source packages are added, use the same launcher for formatting, building, 
 .\scripts\go.ps1 test ./...
 ```
 
-The module does not yet contain application packages. The `version` and `env` commands verify the development environment; the package commands become applicable when source code is added.
+The `version` and `env` commands inspect the development environment. Package tests exercise the CLI, interface filtering, proxy selection and forwarding, and egress response handling. Network tests use local fixtures and do not query the machine's actual public IP.
 
 For each invocation, the launcher temporarily configures its process environment and lets the Go child process inherit it. A `finally` block restores the previous values when the invocation finishes. It does not write user-level or system-level environment settings.
 
@@ -205,6 +246,12 @@ iptest/
 ├── AGENTS.md       # Project rules for coding agents
 ├── go.mod          # Module path and minimum Go version
 ├── .go-version     # SDK version used by the project-local launcher
+├── cmd/iptest/     # Executable entry point
+├── internal/
+│   ├── cli/        # Arguments, output, orchestration, and exit codes
+│   ├── netinfo/    # Local interface address enumeration
+│   ├── proxy/      # Explicit/environment proxy selection and transport
+│   └── egress/     # Separate IPv4/IPv6 public IP probes
 ├── scripts/
 │   ├── setup-go.ps1 # Download and verify the pinned SDK
 │   ├── go.ps1       # Run Go with a project-local environment
@@ -227,7 +274,7 @@ iptest/
 - Make small commits, each focused on one clear change. Use prefixes such as `docs:`, `feat:`, `fix:`, `test:`, and `chore:`.
 - Commit only shareable source code, documentation, and configuration templates. Keep local API keys, proxy credentials, and inspection logs out of version control.
 
-Run these checks through the project launcher once source packages exist:
+Run these checks through the project launcher:
 
 ```powershell
 .\scripts\go.ps1 vet ./...
@@ -242,12 +289,15 @@ Run these checks through the project launcher once source packages exist:
 - [x] Define the `main`, `develop`, and `feature/*` branching and merge workflow.
 - [x] Initialize the Go module.
 - [x] Verify SDK setup, compilation, environment restoration, and cleanup previews on the Windows development host.
-- [ ] Implement the CLI command entry point.
-- [ ] Implement interface enumeration, manual proxies, and proxy environment variables.
-- [ ] Implement platform-specific static proxy support and public egress detection.
+- [x] Implement the CLI command entry point.
+- [x] Implement interface enumeration, manual proxies, and proxy environment variables.
+- [x] Implement separate IPv4/IPv6 public egress detection.
+- [ ] Implement platform-specific static proxy discovery.
 - [ ] Integrate free geolocation lookups.
 - [ ] Add optional API keys for reputation lookups.
-- [ ] Verify proxy failures, network changes, rate limits, and other key scenarios.
+- [x] Test proxy failures, NO_PROXY, TLS verification, response validation, rate limits, cancellation, and timeouts using local fixtures.
+- [x] Cross-build the egress CLI for Windows, Linux, and macOS on amd64/arm64.
+- [ ] Verify real proxy/node changes and target-system runtime behavior.
 - [ ] Verify behavior and build executables for the target systems.
 - [ ] Evaluate Android support through Termux.
 
