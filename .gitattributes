@@ -1,0 +1,6 @@
+# Normalize text files across Windows, Linux, and macOS
+* text=auto eol=lf
+
+# Windows command scripts
+*.bat text eol=crlf
+*.cmd text eol=crlf

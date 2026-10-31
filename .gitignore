@@ -1,0 +1,25 @@
+# Build outputs
+/bin/
+/build/
+/dist/
+/iptest
+/iptest.exe
+*.test
+*.test.exe
+/coverage.out
+/coverage.html
+
+# Local secrets and configuration; examples may be committed
+.env
+.env.*
+!.env.example
+/iptest.local.json
+/.iptest/
+
+# Runtime logs
+*.log
+
+# Operating-system files
+.DS_Store
+Thumbs.db
+Desktop.ini
