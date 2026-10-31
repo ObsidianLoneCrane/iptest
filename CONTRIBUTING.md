@@ -72,7 +72,7 @@ Invoke Go through `.\scripts\go.ps1`; do not bypass it with a system `go` execut
 .\scripts\go.ps1 test ./...
 ```
 
-While the module contains no source packages, use `version` and `env` to verify setup; do not describe an empty package set as tested application functionality.
+The egress milestone includes application packages and local fixture tests. Run package checks through the launcher. Network tests use loopback servers and do not need a public IP query or real proxy credentials; successful local tests do not establish that a particular external proxy is reachable.
 
 To remove the temporary environment, preview `.\scripts\clean-go.ps1 -WhatIf`, then run `.\scripts\clean-go.ps1`. Cleanup removes only `.tools/go` and `.cache/go`, preserving source files and `bin` outputs. Re-run setup when the environment is needed again.
 
