@@ -2,7 +2,7 @@
 
 A cross-platform IP inspection command-line tool for personal use. It prioritizes the proxy's public egress IP and displays local interface IP addresses, the public egress IP, its estimated location, and a brief reputation assessment in the terminal.
 
-> Project status: requirements and documentation setup. The repository does not yet contain Go source code, a `go.mod` file, or an executable. The inspection commands, proxy integration, and platform support described below are planned and are not yet available to run.
+> Project status: development environment setup. The Go module is initialized, but the repository does not yet contain the CLI implementation or an application executable. The inspection commands, proxy integration, and application platform support described below remain planned.
 
 ## Goals
 
@@ -97,7 +97,7 @@ Use separate adapters for data sources and handle timeouts, caching, rate limits
 
 ## Platforms and Technology
 
-The planned implementation uses Go, favoring the standard library and pure Go dependencies to minimize runtime and system-library requirements.
+The planned implementation uses Go, favoring the standard library and pure Go dependencies to minimize runtime and system-library requirements. Go is a development dependency: users of a compiled `iptest` executable will not need to install Go.
 
 | Platform | Planned Deliverable | Verification Status |
 | --- | --- | --- |
@@ -110,6 +110,92 @@ The planned implementation uses Go, favoring the standard library and pure Go de
 
 The goal is to share Linux builds across distributions with the same CPU architecture, while verifying execution on each distribution. Android requires separate work on interface enumeration, permissions, and proxy behavior.
 
+## Workspace-local Development Environment
+
+Use a temporary Go environment inside this repository instead of installing a global toolchain. The current scripts support Windows PowerShell 5.1 and PowerShell 7 on Windows. Run the examples below from the repository root.
+
+### Set up the toolchain
+
+```powershell
+.\scripts\setup-go.ps1
+.\scripts\go.ps1 version
+```
+
+The first setup requires an internet connection. It downloads the Go SDK from the official Go distribution service and verifies the archive's SHA-256 checksum before use. The SDK version is pinned to **Go 1.27.3** in `.go-version`. The `go 1.26.0` directive in `go.mod` declares the module's minimum Go language/toolchain requirement; it is separate from the SDK version selected for this development environment.
+
+If local script execution is blocked, use a separate PowerShell process with a temporary execution policy:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup-go.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\go.ps1 version
+```
+
+This changes the policy only for that process. It does not change the user's or machine's execution policy.
+
+The scripts keep their downloaded SDK and Go state in these ignored directories:
+
+| Directory | Contents |
+| --- | --- |
+| `.tools/go` | Downloaded SDK archives and the extracted Go toolchain |
+| `.cache/go` | Project-local Go workspace, build cache, module cache, and temporary files |
+
+### Run Go commands
+
+Always invoke Go through the project launcher:
+
+```powershell
+.\scripts\go.ps1 version
+.\scripts\go.ps1 env GOROOT GOPATH GOCACHE GOMODCACHE GOTMPDIR GOENV GOTOOLCHAIN GOTELEMETRY
+```
+
+Once source packages are added, use the same launcher for formatting, building, and validation:
+
+```powershell
+.\scripts\go.ps1 fmt ./...
+.\scripts\go.ps1 build ./...
+.\scripts\go.ps1 vet ./...
+.\scripts\go.ps1 test ./...
+```
+
+The module does not yet contain application packages. The `version` and `env` commands verify the development environment; the package commands become applicable when source code is added.
+
+For each invocation, the launcher temporarily configures its process environment and lets the Go child process inherit it. A `finally` block restores the previous values when the invocation finishes. It does not write user-level or system-level environment settings.
+
+| Setting | Value |
+| --- | --- |
+| `GOROOT` | The SDK directory under `.tools/go` |
+| `GOPATH`, `GOBIN`, `GOCACHE`, `GOMODCACHE`, `GOTMPDIR` | Dedicated directories under `.cache/go` |
+| `APPDATA`, `LOCALAPPDATA`, `TEMP`, `TMP` | Dedicated directories under `.cache/go`, keeping Go configuration and temporary state project-local |
+| `GOENV` | `off`, so the user's persistent Go environment file is not used |
+| `GOTOOLCHAIN` | `local`, so Go does not automatically download another toolchain |
+| `GOWORK`, `GO111MODULE` | `off` and `on`, respectively, to use the project's module independently |
+| `GOFLAGS`, `GOCACHEPROG` | Cleared for the invocation to avoid inherited build overrides or external cache helpers |
+| `CGO_ENABLED` | `0`, keeping this project's default development workflow pure Go |
+
+Telemetry is disabled with the official `go telemetry off` command and its configuration is stored inside the project-local environment. `GOTELEMETRY` in the `env` example is a read-only status query, not an environment variable used to disable telemetry.
+
+No global Go installation, persistent `PATH` update, or `HOME` change is required. Do not use `go env -w` to configure this project; keep its environment in the launcher.
+
+The current environment scripts support Windows only. Equivalent setup for Linux and macOS is future work, separate from the planned application's cross-platform Go implementation. This setup does not establish Android support or runtime compatibility for the planned application.
+
+### Remove the temporary environment
+
+Finish running Go commands before cleanup. Preview the targets before removing the downloaded toolchain and its caches:
+
+```powershell
+.\scripts\clean-go.ps1 -WhatIf
+```
+
+Then remove the project-local environment:
+
+```powershell
+.\scripts\clean-go.ps1
+```
+
+Cleanup targets only `.tools/go` and `.cache/go`. Source code, tracked project files, and application binaries in `bin` are retained. Run `setup-go.ps1` again to restore the development environment when needed.
+
+To remove only caches while retaining the SDK, use `.\scripts\clean-go.ps1 -CacheOnly`.
+
 ## Current Files
 
 ```text
@@ -117,13 +203,22 @@ iptest/
 ├── README.md       # Scope, technical plan, and development progress
 ├── CONTRIBUTING.md # Branching, commits, validation, and merge workflow
 ├── AGENTS.md       # Project rules for coding agents
+├── go.mod          # Module path and minimum Go version
+├── .go-version     # SDK version used by the project-local launcher
+├── scripts/
+│   ├── setup-go.ps1 # Download and verify the pinned SDK
+│   ├── go.ps1       # Run Go with a project-local environment
+│   ├── go-common.ps1 # Shared toolchain paths and environment settings
+│   ├── go-checksums.json # Reviewed official SDK archive checksums
+│   └── clean-go.ps1 # Remove only the temporary SDK and Go state
 ├── .gitignore      # Build artifacts and local configuration exclusions
 └── .gitattributes  # Cross-platform line-ending rules
 ```
 
 ## Development Conventions
 
-- The Go version will be declared in `go.mod`; the planned module path is `github.com/ObsidianLoneCrane/iptest`.
+- The module path is `github.com/ObsidianLoneCrane/iptest`, with a minimum Go version of `1.26.0`. The development SDK is pinned separately in `.go-version`.
+- Use the project-local Go launcher for development and validation. Keep the SDK under `.tools/go` and its cache/temporary state under `.cache/go`; do not install or configure a global Go environment for this project.
 - Use `main`, `develop`, and `feature/*` branches. Start routine changes on a feature branch from the latest `develop`; see [Contributing](CONTRIBUTING.md).
 - Use UTF-8 for source files, LF line endings for regular text, and `gofmt` for Go code.
 - Keep the implementation small. Separate command entry points, proxy handling, egress detection, geolocation, and reputation logic as needed.
@@ -132,11 +227,11 @@ iptest/
 - Make small commits, each focused on one clear change. Use prefixes such as `docs:`, `feat:`, `fix:`, `test:`, and `chore:`.
 - Commit only shareable source code, documentation, and configuration templates. Keep local API keys, proxy credentials, and inspection logs out of version control.
 
-Run these checks once the Go module and source code exist. They are not applicable during the current documentation phase:
+Run these checks through the project launcher once source packages exist:
 
-```sh
-go vet ./...
-go test ./...
+```powershell
+.\scripts\go.ps1 vet ./...
+.\scripts\go.ps1 test ./...
 ```
 
 ## Roadmap
@@ -145,7 +240,9 @@ go test ./...
 - [x] Create the README, Git ignore rules, and line-ending conventions.
 - [x] Initialize the Git repository and complete the first push to GitHub.
 - [x] Define the `main`, `develop`, and `feature/*` branching and merge workflow.
-- [ ] Initialize the Go module and command entry point.
+- [x] Initialize the Go module.
+- [x] Verify SDK setup, compilation, environment restoration, and cleanup previews on the Windows development host.
+- [ ] Implement the CLI command entry point.
 - [ ] Implement interface enumeration, manual proxies, and proxy environment variables.
 - [ ] Implement platform-specific static proxy support and public egress detection.
 - [ ] Integrate free geolocation lookups.
