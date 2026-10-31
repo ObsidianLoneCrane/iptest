@@ -45,6 +45,41 @@ When starting on another machine, clone the repository first. If there is no loc
 
 If an existing unmerged `feature/*` branch is suitable for the current task, update and continue using it instead of creating another branch for the same task.
 
+## Development Environment
+
+Use the repository's temporary Go environment for all development work. It is a development dependency; users of a compiled `iptest` executable will not need Go installed.
+
+The current scripts support Windows PowerShell 5.1 and PowerShell 7 on Windows. From the repository root, initialize the pinned SDK and inspect the environment:
+
+```powershell
+.\scripts\setup-go.ps1
+.\scripts\go.ps1 version
+.\scripts\go.ps1 env GOROOT GOPATH GOCACHE GOMODCACHE GOTMPDIR GOENV GOTOOLCHAIN GOTELEMETRY
+```
+
+The first setup downloads the official SDK and verifies its SHA-256 checksum. `.go-version` pins the development SDK to `1.27.3`; the `go 1.26.0` directive in `go.mod` sets the module's minimum version and does not select the development SDK.
+
+Keep SDK downloads and extracted tools under `.tools/go`, and Go workspace/cache/configuration/temporary state under `.cache/go`. Both directories are ignored by Git. The launcher temporarily sets `GOROOT`, `GOPATH`, `GOCACHE`, `GOMODCACHE`, `GOTMPDIR`, `APPDATA`, `LOCALAPPDATA`, `TEMP`, and `TMP`, with `GOENV=off` and `GOTOOLCHAIN=local`; the Go child process inherits these settings, and `finally` restores the previous process environment. It does not write user-level or system-level environment settings. Do not install a global Go toolchain, persistently change `PATH` or `HOME`, or use `go env -w` for this project.
+
+Disable telemetry with the official `go telemetry off` command using the project-local configuration paths. `GOTELEMETRY` is queried for verification, not set as an environment variable to control telemetry.
+
+Invoke Go through `.\scripts\go.ps1`; do not bypass it with a system `go` executable. Once source packages exist, for example:
+
+```powershell
+.\scripts\go.ps1 fmt ./...
+.\scripts\go.ps1 build ./...
+.\scripts\go.ps1 vet ./...
+.\scripts\go.ps1 test ./...
+```
+
+While the module contains no source packages, use `version` and `env` to verify setup; do not describe an empty package set as tested application functionality.
+
+To remove the temporary environment, preview `.\scripts\clean-go.ps1 -WhatIf`, then run `.\scripts\clean-go.ps1`. Cleanup removes only `.tools/go` and `.cache/go`, preserving source files and `bin` outputs. Re-run setup when the environment is needed again.
+
+The current environment scripts support Windows only. Linux/macOS setup is future work and must be implemented and validated separately. Android support remains outside the current setup scope. See [README.md](README.md#workspace-local-development-environment) for the full environment and cleanup guide.
+
+When updating the development SDK, update `.go-version` and the matching entries in `scripts/go-checksums.json` together. Verify the hashes against the [official Go downloads](https://go.dev/dl/) before running setup. Do not automatically select a different SDK or relax checksum verification when a pinned archive is missing.
+
 ## Commits and Validation
 
 Review the actual diff before committing and stage only files related to the task. Continuing with the README example:
@@ -63,7 +98,7 @@ Use commit messages in the form `type: short description`, with prefixes such as
 Match validation to the scope of the change:
 
 - For documentation changes, check content, links, examples, encoding, line endings, and `git diff --check`.
-- Once the Go module exists, format modified Go files with `gofmt`. Run applicable `go vet ./...` and `go test ./...` checks for source changes.
+- Once source packages exist, format modified Go files with `gofmt` through `.\scripts\go.ps1 fmt ./...`. Run applicable `.\scripts\go.ps1 vet ./...` and `.\scripts\go.ps1 test ./...` checks for source changes, using the same project-local environment for builds.
 - For network logic, focus on preventing direct fallback after proxy failure, keeping the inspected IP fixed, IPv4/IPv6 behavior, and API error handling.
 - For platform integration, build for the target platform and perform necessary runtime checks. Successful cross-compilation does not mean the program has been verified on that system.
 - Label unimplemented features as planned. Do not claim that tests or platform checks passed unless they were actually performed.
