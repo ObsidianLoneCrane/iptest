@@ -17,9 +17,9 @@ This file applies to the entire repository. Read [README.md](README.md) and [CON
 ## Project Scope
 
 - This project is a Go CLI for personal use, targeting Windows, Ubuntu, Arch Linux, CachyOS, and macOS. Android support through Termux is reserved for future evaluation.
-- Normal output contains only local interface IP addresses, public egress IP addresses, country/state or province/city, and a brief reputation assessment.
+- Normal output contains only local interface IP addresses, public egress IP addresses, country/state or province/city, and available third-party IP information. Format source fields as a Field/Status/Meaning table under a protocol-family and source heading. Display source fields without an overall cleanliness verdict, risk grade, or local sharing threshold; leave interpretation to the user.
 - Prioritize the selected proxy. Do not silently fall back to a direct connection after a proxy failure. Once an egress IP is obtained, explicitly query that same IP with subsequent data sources.
-- Display "Unknown" when reputation data is insufficient or a lookup fails. Do not interpret missing data as a clean reputation.
+- Omit missing, invalid, empty, or unusable source fields. Preserve explicit boolean false values as source facts; a zero device estimate is not proof of zero users and is omitted. Missing optional source data alone is not an inspection failure. Report actual lookup failures through safe diagnostics, and never interpret missing data as a clean reputation.
 - Do not present unfinished features or planned commands as implemented, or cross-compilation results as successful runtime verification.
 - Keep the implementation small, favor the standard library and pure Go dependencies, and organize code according to actual needs.
 
