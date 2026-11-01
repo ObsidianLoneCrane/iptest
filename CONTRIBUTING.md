@@ -72,7 +72,7 @@ Invoke Go through `.\scripts\go.ps1`; do not bypass it with a system `go` execut
 .\scripts\go.ps1 test ./...
 ```
 
-The egress milestone includes application packages and local fixture tests. Run package checks through the launcher. Network tests use loopback servers and do not need a public IP query or real proxy credentials; successful local tests do not establish that a particular external proxy is reachable.
+The egress and geolocation milestones include application packages and local fixture tests. Run package checks through the launcher. Network tests use loopback servers and do not need a public IP query, a live geolocation request, or real proxy credentials; successful local tests do not establish that a particular external proxy or provider is reachable.
 
 To remove the temporary environment, preview `.\scripts\clean-go.ps1 -WhatIf`, then run `.\scripts\clean-go.ps1`. Cleanup removes only `.tools/go` and `.cache/go`, preserving source files and `bin` outputs. Re-run setup when the environment is needed again.
 
@@ -100,6 +100,7 @@ Match validation to the scope of the change:
 - For documentation changes, check content, links, examples, encoding, line endings, and `git diff --check`.
 - Once source packages exist, format modified Go files with `gofmt` through `.\scripts\go.ps1 fmt ./...`. Run applicable `.\scripts\go.ps1 vet ./...` and `.\scripts\go.ps1 test ./...` checks for source changes, using the same project-local environment for builds.
 - For network logic, focus on preventing direct fallback after proxy failure, keeping the inspected IP fixed, IPv4/IPv6 behavior, and API error handling.
+- For geolocation, check that requests use the observed IP and existing HTTP client, that returned IPs match, and that missing location levels remain valid `Unknown` values. Cover malformed responses, rate limits, cancellation, and timeouts with local fixtures; failures must preserve successful egress results and produce partial-failure status. A failed egress probe must not start a geolocation lookup.
 - For platform integration, build for the target platform and perform necessary runtime checks. Successful cross-compilation does not mean the program has been verified on that system.
 - Label unimplemented features as planned. Do not claim that tests or platform checks passed unless they were actually performed.
 
