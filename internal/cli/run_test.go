@@ -14,6 +14,7 @@ import (
 	"github.com/ObsidianLoneCrane/iptest/internal/geolocation"
 	"github.com/ObsidianLoneCrane/iptest/internal/netinfo"
 	"github.com/ObsidianLoneCrane/iptest/internal/proxy"
+	"github.com/ObsidianLoneCrane/iptest/internal/reputation"
 )
 
 type detectorFunc func(context.Context, egress.Family) (egress.Observation, error)
@@ -26,6 +27,22 @@ type geolocatorFunc func(context.Context, netip.Addr) (geolocation.Location, err
 
 func (function geolocatorFunc) Lookup(ctx context.Context, ip netip.Addr) (geolocation.Location, error) {
 	return function(ctx, ip)
+}
+
+type reputationFunc func(context.Context, netip.Addr) (reputation.Report, error)
+
+func (function reputationFunc) Lookup(ctx context.Context, ip netip.Addr) (reputation.Report, error) {
+	return function(ctx, ip)
+}
+
+func sampleSourceReport() reputation.Report {
+	devices := int64(2)
+	compromised := false
+	return reputation.Report{
+		EstimatedDevices: &devices,
+		Detections:       reputation.Detections{Compromised: &compromised},
+		AttackHistory:    map[string]int64{},
+	}
 }
 
 func successfulDependencies() dependencies {
@@ -51,6 +68,11 @@ func successfulDependencies() dependencies {
 					return geolocation.Location{Country: "Canada", Region: "Quebec", City: "Montreal"}, nil
 				}
 				return geolocation.Location{Country: "Japan", Region: "Tokyo Metropolis", City: "Tokyo"}, nil
+			})
+		},
+		reputation: func(*http.Client) reputationLookup {
+			return reputationFunc(func(context.Context, netip.Addr) (reputation.Report, error) {
+				return sampleSourceReport(), nil
 			})
 		},
 	}
@@ -136,8 +158,8 @@ func TestBothFamiliesAreConcurrentAndOutputIsOrdered(t *testing.T) {
 	if !strings.Contains(text, "Estimated location (IPv4): Japan / Tokyo Metropolis / Tokyo") || !strings.Contains(text, "Estimated location (IPv6): Canada / Quebec / Montreal") {
 		t.Fatalf("geolocation results were not associated with their families: %q", text)
 	}
-	if strings.Count(text, "IP reputation (") != 2 || strings.Count(text, "Unknown (not implemented)") != 2 || strings.Contains(text, "No known risk") {
-		t.Fatalf("unimplemented reputation must stay Unknown: %q", text)
+	if strings.Count(text, "IP source data (") != 2 || strings.Contains(text, "IP reputation") || !strings.Contains(text, "IP source data (IPv4, proxycheck.io):\n"+reputation.Summary(sampleSourceReport())) {
+		t.Fatalf("successful source data was not rendered: %q", text)
 	}
 }
 
@@ -262,7 +284,7 @@ func TestInterfaceNamesCannotInjectTerminalControls(t *testing.T) {
 	}
 	var stdout, stderr bytes.Buffer
 	code := run(context.Background(), []string{"--family", "ipv4"}, &stdout, &stderr, deps)
-	if code != 0 || strings.Contains(stdout.String(), "\x1b") || strings.Count(stdout.String(), "\n") != 4 {
+	if code != 0 || strings.Contains(stdout.String(), "\x1b") || strings.Count(stdout.String(), "\n") != 3+sourceTableLines(sampleSourceReport()) {
 		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
 	}
 }

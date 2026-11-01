@@ -18,13 +18,13 @@ import (
 	"github.com/ObsidianLoneCrane/iptest/internal/geolocation"
 	"github.com/ObsidianLoneCrane/iptest/internal/netinfo"
 	"github.com/ObsidianLoneCrane/iptest/internal/proxy"
+	"github.com/ObsidianLoneCrane/iptest/internal/reputation"
 )
 
 const help = `Usage: iptest [options]
 
-Inspect local interface IP addresses, public egress IP addresses, and their
-estimated country/region, state/province, and city. Reputation checks are
-planned; this version reports reputation as Unknown.
+Inspect local interface IP addresses, public egress IP addresses, their
+estimated country/region, state/province, and city, and third-party IP source data.
 
 Options:
   --proxy URL       Use an explicit HTTP, HTTPS, SOCKS5, or SOCKS5H proxy.
@@ -32,7 +32,8 @@ Options:
   --family FAMILY   ipv4, ipv6, or both (default: both).
   --timeout DURATION
                     Per-request timeout, such as 10s (default: 10s).
-                    Egress detection and geolocation are separate requests.
+                    Egress is followed by parallel location/source requests.
+                    A family can take approximately twice this timeout.
   --version         Print the development version without network requests.
   --help, -h        Show this help without network requests.
 
@@ -45,8 +46,9 @@ Environment:
   that route may still traverse a TUN interface or VPN.
 
 Exit codes:
-  0  Requested egress probes, geolocation lookups, and interface reads succeeded.
-  1  Inspection failed or only partial results are available.
+  0  Requested probes/lookups and interface reads succeeded.
+     Unavailable optional source fields are omitted.
+  1  A request or interface read failed; partial results may be available.
   2  Invalid arguments or proxy configuration.
   130  Inspection canceled.
 `
@@ -59,11 +61,16 @@ type geolocator interface {
 	Lookup(context.Context, netip.Addr) (geolocation.Location, error)
 }
 
+type reputationLookup interface {
+	Lookup(context.Context, netip.Addr) (reputation.Report, error)
+}
+
 type dependencies struct {
 	interfaces func() ([]netinfo.Address, error)
 	client     func(string, time.Duration) (*proxy.Client, error)
 	detector   func(*http.Client) detector
 	geolocator func(*http.Client) geolocator
+	reputation func(*http.Client) reputationLookup
 }
 
 // Run executes one invocation. Only the caller decides whether to exit the process.
@@ -73,6 +80,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		client:     proxy.NewClient,
 		detector:   func(client *http.Client) detector { return egress.New(client) },
 		geolocator: func(client *http.Client) geolocator { return geolocation.New(client) },
+		reputation: func(client *http.Client) reputationLookup { return reputation.New(client) },
 	})
 }
 
@@ -160,10 +168,13 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, deps depe
 		err         error
 		location    geolocation.Location
 		locationErr error
+		report      reputation.Report
+		reportErr   error
 	}
 	results := make([]result, len(families))
 	service := deps.detector(route.HTTP)
 	locations := deps.geolocator(route.HTTP)
+	reputations := deps.reputation(route.HTTP)
 	var pending sync.WaitGroup
 	for index, requested := range families {
 		pending.Add(1)
@@ -172,7 +183,19 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, deps depe
 			entry := &results[index]
 			entry.observation, entry.err = service.Detect(ctx, requested)
 			if entry.err == nil {
-				entry.location, entry.locationErr = locations.Lookup(ctx, entry.observation.IP)
+				// Both lookups inspect the observed IP independently. A slow or
+				// failed source must not suppress the other source's result.
+				var lookups sync.WaitGroup
+				lookups.Add(2)
+				go func() {
+					defer lookups.Done()
+					entry.location, entry.locationErr = locations.Lookup(ctx, entry.observation.IP)
+				}()
+				go func() {
+					defer lookups.Done()
+					entry.report, entry.reportErr = reputations.Lookup(ctx, entry.observation.IP)
+				}()
+				lookups.Wait()
 			}
 		}(index, requested)
 	}
@@ -198,13 +221,50 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, deps depe
 				fmt.Fprintf(stdout, "Estimated location (%s): %s / %s / %s\n", label,
 					locationField(entry.location.Country), locationField(entry.location.Region), locationField(entry.location.City))
 			}
+			if entry.reportErr != nil {
+				fmt.Fprintf(stderr, "iptest: %s reputation lookup failed: %s\n", label, reputationDiagnostic(entry.reportErr))
+				exitCode = 1
+			} else {
+				if summary := reputation.Summary(entry.report); summary != "" {
+					fmt.Fprintf(stdout, "IP source data (%s, proxycheck.io):\n%s\n", label, summary)
+				}
+				if entry.report.Warning {
+					fmt.Fprintf(stderr, "iptest: %s source proxycheck.io reported a warning.\n", label)
+				}
+			}
 		}
-		fmt.Fprintf(stdout, "IP reputation (%s): Unknown (not implemented)\n", label)
 	}
 	if errors.Is(ctx.Err(), context.Canceled) {
 		return 130
 	}
 	return exitCode
+}
+
+func reputationFailure(err error) string {
+	switch {
+	case errors.Is(err, reputation.ErrDenied):
+		return "anonymous access denied"
+	case errors.Is(err, reputation.ErrRateLimited):
+		return "rate limited"
+	default:
+		return "lookup failed"
+	}
+}
+
+func reputationDiagnostic(err error) string {
+	switch {
+	case errors.Is(err, proxy.ErrProxyBypass):
+		return proxy.ErrProxyBypass.Error()
+	case errors.Is(err, context.Canceled):
+		return "request canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "request timed out"
+	case errors.Is(err, reputation.ErrDenied), errors.Is(err, reputation.ErrRateLimited):
+		return reputationFailure(err)
+	default:
+		// Do not display transport errors or provider response text here.
+		return "request failed"
+	}
 }
 
 func diagnostic(err error) string {

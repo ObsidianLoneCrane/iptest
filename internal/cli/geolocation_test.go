@@ -17,6 +17,7 @@ import (
 	"github.com/ObsidianLoneCrane/iptest/internal/egress"
 	"github.com/ObsidianLoneCrane/iptest/internal/geolocation"
 	"github.com/ObsidianLoneCrane/iptest/internal/proxy"
+	"github.com/ObsidianLoneCrane/iptest/internal/reputation"
 )
 
 type inspectionTransport func(*http.Request) (*http.Response, error)
@@ -148,7 +149,7 @@ func TestMissingLocationLevelsAreSuccessfulUnknownValues(t *testing.T) {
 			}
 			var stdout, stderr bytes.Buffer
 			code := run(context.Background(), []string{"--family", "ipv4"}, &stdout, &stderr, deps)
-			if code != 0 || stderr.Len() != 0 || !strings.Contains(stdout.String(), "Estimated location (IPv4): "+testCase.want) || strings.Count(stdout.String(), "\n") != 4 {
+			if code != 0 || stderr.Len() != 0 || !strings.Contains(stdout.String(), "Estimated location (IPv4): "+testCase.want) || strings.Count(stdout.String(), "\n") != 3+sourceTableLines(sampleSourceReport()) {
 				t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
 			}
 		})
@@ -170,11 +171,15 @@ func TestGeolocationFailureRetainsIPAndOtherFamilyLocation(t *testing.T) {
 	if code != 1 || !strings.Contains(stdout.String(), "Public egress IP (IPv6): 2001:db8::10") || !strings.Contains(stdout.String(), "Estimated location (IPv6): Unknown (lookup failed)") || !strings.Contains(stdout.String(), "Estimated location (IPv4): Japan / Unknown / Tokyo") || !strings.Contains(stderr.String(), "IPv6 geolocation lookup failed") {
 		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
 	}
+	if !strings.Contains(stdout.String(), "IP source data (IPv6, proxycheck.io):\n"+reputation.Summary(sampleSourceReport())) {
+		t.Fatalf("geolocation failure suppressed source data: %q", stdout.String())
+	}
 }
 
-func TestEgressFailureDoesNotQueryGeolocation(t *testing.T) {
+func TestEgressFailureDoesNotQueryDependentSources(t *testing.T) {
 	deps := successfulDependencies()
 	var lookups atomic.Int32
+	var reputationLookups atomic.Int32
 	deps.detector = func(*http.Client) detector {
 		return detectorFunc(func(context.Context, egress.Family) (egress.Observation, error) {
 			return egress.Observation{}, errors.New("egress unavailable")
@@ -186,10 +191,16 @@ func TestEgressFailureDoesNotQueryGeolocation(t *testing.T) {
 			return geolocation.Location{}, nil
 		})
 	}
+	deps.reputation = func(*http.Client) reputationLookup {
+		return reputationFunc(func(context.Context, netip.Addr) (reputation.Report, error) {
+			reputationLookups.Add(1)
+			return sampleSourceReport(), nil
+		})
+	}
 	var stdout, stderr bytes.Buffer
 	code := run(context.Background(), nil, &stdout, &stderr, deps)
-	if code != 1 || lookups.Load() != 0 || strings.Count(stdout.String(), "Unknown (egress unavailable)") != 2 {
-		t.Fatalf("code = %d, lookups = %d, stdout = %q", code, lookups.Load(), stdout.String())
+	if code != 1 || lookups.Load() != 0 || reputationLookups.Load() != 0 || strings.Count(stdout.String(), "Unknown (egress unavailable)") != 2 || strings.Contains(stdout.String(), "IP source data") || strings.Contains(stdout.String(), "IP reputation") {
+		t.Fatalf("code = %d, geolocation lookups = %d, reputation lookups = %d, stdout = %q", code, lookups.Load(), reputationLookups.Load(), stdout.String())
 	}
 }
 
