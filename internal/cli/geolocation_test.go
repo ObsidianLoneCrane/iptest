@@ -81,7 +81,7 @@ func TestGeolocationUsesObservedIPsAndSharedTransport(t *testing.T) {
 		return geolocation.New(client)
 	}
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), nil, &stdout, &stderr, deps)
+	code := runPlain(context.Background(), []string{"--family", "both"}, &stdout, &stderr, deps)
 	if code != 0 || stderr.Len() != 0 {
 		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
 	}
@@ -122,7 +122,7 @@ func TestGeolocationPipelinesAreConcurrentAndStayWithTheirFamilies(t *testing.T)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	var stdout, stderr bytes.Buffer
-	code := run(ctx, nil, &stdout, &stderr, deps)
+	code := runPlain(ctx, []string{"--family", "both"}, &stdout, &stderr, deps)
 	first := strings.Index(stdout.String(), "Estimated location (IPv4): Japan / Unknown / Tokyo")
 	second := strings.Index(stdout.String(), "Estimated location (IPv6): Canada / Unknown / Montreal")
 	if code != 0 || stderr.Len() != 0 || first < 0 || second <= first {
@@ -148,8 +148,8 @@ func TestMissingLocationLevelsAreSuccessfulUnknownValues(t *testing.T) {
 				})
 			}
 			var stdout, stderr bytes.Buffer
-			code := run(context.Background(), []string{"--family", "ipv4"}, &stdout, &stderr, deps)
-			if code != 0 || stderr.Len() != 0 || !strings.Contains(stdout.String(), "Estimated location (IPv4): "+testCase.want) || strings.Count(stdout.String(), "\n") != 3+sourceTableLines(sampleSourceReport()) {
+			code := runPlain(context.Background(), []string{"--family", "ipv4"}, &stdout, &stderr, deps)
+			if code != 0 || stderr.Len() != 0 || !strings.Contains(stdout.String(), "Estimated location (IPv4): "+testCase.want) || strings.Count(stdout.String(), "\n") != 4+sourceTableLines(sampleSourceReport()) {
 				t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
 			}
 		})
@@ -167,7 +167,7 @@ func TestGeolocationFailureRetainsIPAndOtherFamilyLocation(t *testing.T) {
 		})
 	}
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), nil, &stdout, &stderr, deps)
+	code := runPlain(context.Background(), []string{"--family", "both"}, &stdout, &stderr, deps)
 	if code != 1 || !strings.Contains(stdout.String(), "Public egress IP (IPv6): 2001:db8::10") || !strings.Contains(stdout.String(), "Estimated location (IPv6): Unknown (lookup failed)") || !strings.Contains(stdout.String(), "Estimated location (IPv4): Japan / Unknown / Tokyo") || !strings.Contains(stderr.String(), "IPv6 geolocation lookup failed") {
 		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
 	}
@@ -198,7 +198,7 @@ func TestEgressFailureDoesNotQueryDependentSources(t *testing.T) {
 		})
 	}
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), nil, &stdout, &stderr, deps)
+	code := runPlain(context.Background(), []string{"--family", "both"}, &stdout, &stderr, deps)
 	if code != 1 || lookups.Load() != 0 || reputationLookups.Load() != 0 || strings.Count(stdout.String(), "Unknown (egress unavailable)") != 2 || strings.Contains(stdout.String(), "IP source data") || strings.Contains(stdout.String(), "IP reputation") {
 		t.Fatalf("code = %d, geolocation lookups = %d, reputation lookups = %d, stdout = %q", code, lookups.Load(), reputationLookups.Load(), stdout.String())
 	}
@@ -211,7 +211,7 @@ func TestGeolocationRespectsDestinationSpecificProxyBypass(t *testing.T) {
 	deps.client = proxy.NewClient
 	deps.geolocator = func(client *http.Client) geolocator { return geolocation.New(client) }
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), []string{"--family", "ipv4"}, &stdout, &stderr, deps)
+	code := runPlain(context.Background(), []string{"--family", "ipv4"}, &stdout, &stderr, deps)
 	if code != 1 || !strings.Contains(stdout.String(), "Public egress IP (IPv4): 203.0.113.10") || !strings.Contains(stdout.String(), "Unknown (lookup failed)") || !strings.Contains(stderr.String(), "NO_PROXY") || !strings.Contains(stderr.String(), "--proxy") {
 		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
 	}
@@ -231,7 +231,7 @@ func TestCancellationDuringGeolocationRetainsObservedIP(t *testing.T) {
 	defer cancel()
 	var stdout, stderr bytes.Buffer
 	done := make(chan int, 1)
-	go func() { done <- run(ctx, []string{"--family", "ipv4"}, &stdout, &stderr, deps) }()
+	go func() { done <- runPlain(ctx, []string{"--family", "ipv4"}, &stdout, &stderr, deps) }()
 	select {
 	case <-started:
 	case <-time.After(time.Second):

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/ObsidianLoneCrane/iptest/internal/terminal"
 )
 
 func summaryNumber(value int64) *int64 { return &value }
@@ -74,20 +76,54 @@ func TestSummaryBoundsAndSortsEventOutput(t *testing.T) {
 func tableValues(t *testing.T, table string) string {
 	t.Helper()
 	lines := strings.Split(table, "\n")
-	if len(lines) < 3 {
+	if len(lines) < 5 || !strings.HasPrefix(lines[0], "+-") || lines[len(lines)-1] != lines[0] {
 		t.Fatalf("missing table rows: %q", table)
 	}
-	header := strings.Split(lines[0], "|")
+	header := strings.Split(lines[1], "|")
 	if len(header) != 5 || strings.TrimSpace(header[1]) != "Field" || strings.TrimSpace(header[2]) != "Status" || strings.TrimSpace(header[3]) != "Meaning" {
-		t.Fatalf("unexpected table header: %q", lines[0])
+		t.Fatalf("unexpected table header: %q", lines[1])
 	}
 	var values []string
-	for _, line := range lines[2:] {
-		cells := strings.Split(line, "|")
-		if len(cells) != 5 || strings.TrimSpace(cells[3]) == "" {
-			t.Fatalf("row needs three columns and an explanation: %q", line)
+	var field, status, meaning string
+	flush := func() {
+		if field != "" {
+			if meaning == "" {
+				t.Fatalf("source field needs an explanation: %q", field)
+			}
+			values = append(values, field+"="+status)
 		}
-		values = append(values, strings.TrimSpace(cells[1])+"="+strings.TrimSpace(cells[2]))
 	}
+	for _, line := range lines[3 : len(lines)-1] {
+		cells := strings.Split(line, "|")
+		if len(cells) != 5 {
+			t.Fatalf("row needs three columns: %q", line)
+		}
+		if next := strings.TrimSpace(cells[2]); next != "" {
+			flush()
+			field, status, meaning = strings.TrimSpace(cells[1]), next, strings.TrimSpace(cells[3])
+		} else {
+			if continuation := strings.TrimSpace(cells[1]); continuation != "" {
+				field += " " + continuation
+			}
+			meaning += strings.TrimSpace(cells[3])
+		}
+	}
+	flush()
 	return strings.Join(values, "; ")
+}
+
+func TestSummaryWidthWrapsFactsWithoutChangingTheirMeaning(t *testing.T) {
+	name := strings.Repeat("活动", 30)
+	table := SummaryWidth(Report{NetworkType: "住宅网络", AttackHistory: map[string]int64{name: 19}}, 60)
+	if strings.Count(table, "活") != 30 || strings.Count(table, "动") != 30 || !strings.Contains(table, "19") {
+		t.Fatalf("wrapped table lost source facts: %q", table)
+	}
+	for _, line := range strings.Split(table, "\n") {
+		if terminal.DisplayWidth(line) > 60 {
+			t.Fatalf("line exceeds requested width: %q", line)
+		}
+	}
+	if SummaryWidth(Report{}, 60) != "" {
+		t.Fatal("empty source data must not produce an empty table")
+	}
 }

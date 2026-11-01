@@ -99,8 +99,8 @@ func TestFullInspectionUsesObservedIPsAndSharedTransport(t *testing.T) {
 		return reputation.New(client)
 	}
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), nil, &stdout, &stderr, deps)
-	if code != 0 || stderr.Len() != 0 || strings.Count(stdout.String(), "\n") != 5+2*sourceTableLines(sampleSourceReport()) {
+	code := runPlain(context.Background(), []string{"--family", "both"}, &stdout, &stderr, deps)
+	if code != 0 || stderr.Len() != 0 || strings.Count(stdout.String(), "\n") != 6+2*sourceTableLines(sampleSourceReport()) {
 		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
 	}
 	summary := reputation.Summary(sampleSourceReport())
@@ -155,7 +155,7 @@ func TestGeolocationAndReputationRunConcurrently(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	var stdout, stderr bytes.Buffer
-	code := run(ctx, []string{"--family", "ipv4"}, &stdout, &stderr, deps)
+	code := runPlain(ctx, []string{"--family", "ipv4"}, &stdout, &stderr, deps)
 	if code != 0 || stderr.Len() != 0 || !strings.Contains(stdout.String(), "Japan / Unknown / Tokyo") {
 		t.Fatalf("lookups did not finish independently: code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
 	}
@@ -181,7 +181,7 @@ func TestReputationFailurePreservesIPAndLocation(t *testing.T) {
 				})
 			}
 			var stdout, stderr bytes.Buffer
-			code := run(context.Background(), []string{"--family", "ipv4"}, &stdout, &stderr, deps)
+			code := runPlain(context.Background(), []string{"--family", "ipv4"}, &stdout, &stderr, deps)
 			if code != 1 || !strings.Contains(stdout.String(), "Public egress IP (IPv4): 203.0.113.10") || !strings.Contains(stdout.String(), "Estimated location (IPv4): Japan / Tokyo Metropolis / Tokyo") || strings.Contains(stdout.String(), "IP source data") || strings.Contains(stdout.String(), "IP reputation") || !strings.Contains(stderr.String(), testCase.want) {
 				t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
 			}
@@ -210,8 +210,8 @@ func TestMissingSourceFieldsAreOmittedWithoutFailing(t *testing.T) {
 				return reputationFunc(func(context.Context, netip.Addr) (reputation.Report, error) { return testCase.report, nil })
 			}
 			var stdout, stderr bytes.Buffer
-			code := run(context.Background(), []string{"--family", "ipv4"}, &stdout, &stderr, deps)
-			if code != 0 || stderr.Len() != 0 || !strings.Contains(stdout.String(), "Japan / Tokyo Metropolis / Tokyo") || strings.Count(stdout.String(), "\n") != testCase.lines || strings.Contains(stdout.String(), "Unknown") {
+			code := runPlain(context.Background(), []string{"--family", "ipv4"}, &stdout, &stderr, deps)
+			if code != 0 || stderr.Len() != 0 || !strings.Contains(stdout.String(), "Japan / Tokyo Metropolis / Tokyo") || strings.Count(stdout.String(), "\n") != 4+sourceTableLines(testCase.report) || strings.Contains(stdout.String(), "Unknown") {
 				t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
 			}
 			if summary := reputation.Summary(testCase.report); summary != "" {
@@ -248,8 +248,8 @@ func TestKnownSourceFactsWithoutAttackHistoryAreDisplayed(t *testing.T) {
 	}
 	deps.reputation = func(client *http.Client) reputationLookup { return reputation.New(client) }
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), []string{"--family", "ipv4"}, &stdout, &stderr, deps)
-	if code != 0 || stderr.Len() != 0 || requests.Load() != 1 || strings.Count(stdout.String(), "\n") != 3+sourceTableLines(report) || !strings.Contains(stdout.String(), "IP source data (IPv4, proxycheck.io):\n"+reputation.Summary(report)) || strings.Contains(stdout.String(), "Unknown") {
+	code := runPlain(context.Background(), []string{"--family", "ipv4"}, &stdout, &stderr, deps)
+	if code != 0 || stderr.Len() != 0 || requests.Load() != 1 || strings.Count(stdout.String(), "\n") != 4+sourceTableLines(report) || !strings.Contains(stdout.String(), "IP source data (IPv4, proxycheck.io):\n"+reputation.Summary(report)) || strings.Contains(stdout.String(), "Unknown") {
 		t.Fatalf("known facts were lost because history was missing: code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
 	}
 }
@@ -271,7 +271,7 @@ func TestSourceFactsDoNotProduceOverallJudgment(t *testing.T) {
 				return reputationFunc(func(context.Context, netip.Addr) (reputation.Report, error) { return testCase.report, nil })
 			}
 			var stdout, stderr bytes.Buffer
-			code := run(context.Background(), []string{"--family", "ipv4"}, &stdout, &stderr, deps)
+			code := runPlain(context.Background(), []string{"--family", "ipv4"}, &stdout, &stderr, deps)
 			if code != 0 || stderr.Len() != 0 || !strings.Contains(stdout.String(), "IP source data (IPv4, proxycheck.io):\n"+reputation.Summary(testCase.report)) {
 				t.Fatalf("source facts were not rendered: code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
 			}
@@ -288,12 +288,12 @@ func TestUsableSourceWarningKeepsSourceFacts(t *testing.T) {
 	for _, withFacts := range []bool{false, true} {
 		name := "without facts"
 		report := reputation.Report{Warning: true}
-		lines := 3
+		lines := 4
 		if withFacts {
 			name = "with facts"
 			report = sampleSourceReport()
 			report.Warning = true
-			lines = 3 + sourceTableLines(report)
+			lines = 4 + sourceTableLines(report)
 		}
 		t.Run(name, func(t *testing.T) {
 			deps := successfulDependencies()
@@ -301,7 +301,7 @@ func TestUsableSourceWarningKeepsSourceFacts(t *testing.T) {
 				return reputationFunc(func(context.Context, netip.Addr) (reputation.Report, error) { return report, nil })
 			}
 			var stdout, stderr bytes.Buffer
-			code := run(context.Background(), []string{"--family", "ipv4"}, &stdout, &stderr, deps)
+			code := runPlain(context.Background(), []string{"--family", "ipv4"}, &stdout, &stderr, deps)
 			if code != 0 || !strings.Contains(stderr.String(), "proxycheck.io reported a warning") || strings.Count(stdout.String(), "\n") != lines {
 				t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
 			}
@@ -328,7 +328,7 @@ func TestReputationFailureIsIndependentForEachFamily(t *testing.T) {
 		})
 	}
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), nil, &stdout, &stderr, deps)
+	code := runPlain(context.Background(), []string{"--family", "both"}, &stdout, &stderr, deps)
 	if code != 1 || lookups.Load() != 2 || !strings.Contains(stdout.String(), "IP source data (IPv4, proxycheck.io):\n"+reputation.Summary(sampleSourceReport())) || strings.Contains(stdout.String(), "IP source data (IPv6") || !strings.Contains(stdout.String(), "Estimated location (IPv6): Canada / Quebec / Montreal") || !strings.Contains(stderr.String(), "IPv6 reputation lookup failed: rate limited") {
 		t.Fatalf("code = %d, lookups = %d, stdout = %q, stderr = %q", code, lookups.Load(), stdout.String(), stderr.String())
 	}
@@ -346,7 +346,7 @@ func TestReputationRespectsDestinationSpecificProxyBypass(t *testing.T) {
 	}
 	deps.reputation = func(client *http.Client) reputationLookup { return reputation.New(client) }
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), []string{"--family", "ipv4"}, &stdout, &stderr, deps)
+	code := runPlain(context.Background(), []string{"--family", "ipv4"}, &stdout, &stderr, deps)
 	if code != 1 || !strings.Contains(stdout.String(), "Public egress IP (IPv4): 8.8.8.8") || strings.Contains(stdout.String(), "IP source data") || !strings.Contains(stderr.String(), "NO_PROXY") || !strings.Contains(stderr.String(), "--proxy") {
 		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
 	}
@@ -366,7 +366,7 @@ func TestCancellationDuringReputationRetainsOtherResults(t *testing.T) {
 	defer cancel()
 	var stdout, stderr bytes.Buffer
 	done := make(chan int, 1)
-	go func() { done <- run(ctx, []string{"--family", "ipv4"}, &stdout, &stderr, deps) }()
+	go func() { done <- runPlain(ctx, []string{"--family", "ipv4"}, &stdout, &stderr, deps) }()
 	select {
 	case <-started:
 	case <-time.After(time.Second):
