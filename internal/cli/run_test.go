@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/netip"
 	"strings"
@@ -18,6 +19,13 @@ import (
 )
 
 type detectorFunc func(context.Context, egress.Family) (egress.Observation, error)
+
+// Keep the original line-format assertions as compatibility coverage. Report
+// output is exercised separately, using the real default and the same fixtures.
+func runPlain(ctx context.Context, args []string, stdout, stderr io.Writer, deps dependencies) int {
+	options := append([]string{"--format", "plain"}, args...)
+	return run(ctx, options, stdout, stderr, deps)
+}
 
 func (function detectorFunc) Detect(ctx context.Context, family egress.Family) (egress.Observation, error) {
 	return function(ctx, family)
@@ -83,7 +91,7 @@ func TestHelpAndVersionDoNotInspectNetwork(t *testing.T) {
 		t.Run(argument, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
 			// Nil dependencies ensure these paths do not access interfaces or the network.
-			code := run(context.Background(), []string{argument}, &stdout, &stderr, dependencies{})
+			code := runPlain(context.Background(), []string{argument}, &stdout, &stderr, dependencies{})
 			if code != 0 || stdout.Len() == 0 || stderr.Len() != 0 {
 				t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
 			}
@@ -94,6 +102,8 @@ func TestHelpAndVersionDoNotInspectNetwork(t *testing.T) {
 func TestInvalidArgumentsDoNotInspectOrExposeValues(t *testing.T) {
 	secret := "credential-that-must-not-appear"
 	for _, args := range [][]string{
+		{"--format", secret},
+		{"--speedtest", "invalid"},
 		{"--family", "invalid"},
 		{"--timeout", "0s"},
 		{"--timeout", "-1s"},
@@ -105,7 +115,7 @@ func TestInvalidArgumentsDoNotInspectOrExposeValues(t *testing.T) {
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
-			code := run(context.Background(), args, &stdout, &stderr, dependencies{})
+			code := runPlain(context.Background(), args, &stdout, &stderr, dependencies{})
 			if code != 2 || stdout.Len() != 0 || stderr.Len() == 0 || strings.Contains(stderr.String(), secret) {
 				t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
 			}
@@ -116,7 +126,7 @@ func TestInvalidArgumentsDoNotInspectOrExposeValues(t *testing.T) {
 func TestInvalidProxyIsNotEchoedAndStopsInspection(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	secret := "http://username:private-password@invalid"
-	code := run(context.Background(), []string{"--proxy", secret}, &stdout, &stderr, dependencies{
+	code := runPlain(context.Background(), []string{"--proxy", secret}, &stdout, &stderr, dependencies{
 		client: func(string, time.Duration) (*proxy.Client, error) {
 			return nil, errors.New("unsafe upstream diagnostic: " + secret)
 		},
@@ -148,7 +158,7 @@ func TestBothFamiliesAreConcurrentAndOutputIsOrdered(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	var stdout, stderr bytes.Buffer
-	code := run(ctx, nil, &stdout, &stderr, deps)
+	code := runPlain(ctx, []string{"--family", "both"}, &stdout, &stderr, deps)
 	text := stdout.String()
 	index4 := strings.Index(text, "Public egress IP (IPv4): 203.0.113.10")
 	index6 := strings.Index(text, "Public egress IP (IPv6): 2001:db8::10")
@@ -172,7 +182,7 @@ func TestSingleFamilyAndOptionsAreForwarded(t *testing.T) {
 		return &proxy.Client{HTTP: &http.Client{}, Source: proxy.SourceExplicit}, nil
 	}
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), []string{"--family", "ipv4", "--timeout", "3s", "--proxy", "socks5://127.0.0.1:1080"}, &stdout, &stderr, deps)
+	code := runPlain(context.Background(), []string{"--family", "ipv4", "--timeout", "3s", "--proxy", "socks5://127.0.0.1:1080"}, &stdout, &stderr, deps)
 	if code != 0 || stderr.Len() != 0 || strings.Contains(stdout.String(), "IPv6") {
 		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
 	}
@@ -189,7 +199,7 @@ func TestPartialEgressFailurePreservesSuccessfulResult(t *testing.T) {
 		})
 	}
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), nil, &stdout, &stderr, deps)
+	code := runPlain(context.Background(), []string{"--family", "both"}, &stdout, &stderr, deps)
 	if code != 1 || !strings.Contains(stdout.String(), "Public egress IP (IPv4): 203.0.113.10") || !strings.Contains(stdout.String(), "Public egress IP (IPv6): Unknown") || !strings.Contains(stderr.String(), "IPv6") {
 		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
 	}
@@ -201,7 +211,7 @@ func TestInterfaceFailureStillDetectsEgress(t *testing.T) {
 		return nil, errors.New("interface access denied")
 	}
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), []string{"--family", "ipv4"}, &stdout, &stderr, deps)
+	code := runPlain(context.Background(), []string{"--family", "ipv4"}, &stdout, &stderr, deps)
 	if code != 1 || !strings.Contains(stdout.String(), "Local interface IP: Unknown") || !strings.Contains(stdout.String(), "203.0.113.10") || stderr.Len() == 0 {
 		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
 	}
@@ -215,7 +225,7 @@ func TestProxyBypassKeepsActionableSafeDiagnostic(t *testing.T) {
 		})
 	}
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), []string{"--family", "ipv4"}, &stdout, &stderr, deps)
+	code := runPlain(context.Background(), []string{"--family", "ipv4"}, &stdout, &stderr, deps)
 	if code != 1 || !strings.Contains(stderr.String(), "NO_PROXY") || !strings.Contains(stderr.String(), "--proxy") || strings.Contains(stderr.String(), "private internal cause") {
 		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
 	}
@@ -227,8 +237,8 @@ func TestSystemRouteIsExplicitlyDisclosed(t *testing.T) {
 		return &proxy.Client{HTTP: &http.Client{}, Source: proxy.SourceSystemRoute}, nil
 	}
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), []string{"--family", "ipv4"}, &stdout, &stderr, deps)
-	if code != 0 || !strings.Contains(stderr.String(), "Desktop proxy settings are not read") || strings.Contains(stdout.String(), "Desktop proxy") {
+	code := runPlain(context.Background(), []string{"--family", "ipv4"}, &stdout, &stderr, deps)
+	if code != 0 || stderr.Len() != 0 || !strings.Contains(stdout.String(), "Network path: system route (may include TUN/VPN)") {
 		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
 	}
 }
@@ -237,7 +247,7 @@ func TestCancellationIsReportedWithoutStartingInspection(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	var stdout, stderr bytes.Buffer
-	if code := run(ctx, nil, &stdout, &stderr, dependencies{}); code != 130 || stdout.Len() != 0 {
+	if code := runPlain(ctx, nil, &stdout, &stderr, dependencies{}); code != 130 || stdout.Len() != 0 {
 		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
 	}
 }
@@ -256,7 +266,7 @@ func TestCancellationStopsActiveProbes(t *testing.T) {
 	defer cancel()
 	var stdout, stderr bytes.Buffer
 	done := make(chan int, 1)
-	go func() { done <- run(ctx, nil, &stdout, &stderr, deps) }()
+	go func() { done <- runPlain(ctx, []string{"--family", "both"}, &stdout, &stderr, deps) }()
 	for range 2 {
 		select {
 		case <-started:
@@ -283,8 +293,8 @@ func TestInterfaceNamesCannotInjectTerminalControls(t *testing.T) {
 		return []netinfo.Address{{Interface: "Ethernet\n\x1b[31m", IP: netip.MustParseAddr("10.0.0.2")}}, nil
 	}
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), []string{"--family", "ipv4"}, &stdout, &stderr, deps)
-	if code != 0 || strings.Contains(stdout.String(), "\x1b") || strings.Count(stdout.String(), "\n") != 3+sourceTableLines(sampleSourceReport()) {
+	code := runPlain(context.Background(), []string{"--family", "ipv4"}, &stdout, &stderr, deps)
+	if code != 0 || strings.Contains(stdout.String(), "\x1b") || strings.Count(stdout.String(), "\n") != 4+sourceTableLines(sampleSourceReport()) {
 		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
 	}
 }

@@ -4,25 +4,30 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"text/tabwriter"
 	"unicode"
+
+	"github.com/ObsidianLoneCrane/iptest/internal/terminal"
 )
 
 const maxDisplayedEvents = 8
 
-// Summary formats usable source fields as a Field/Status/Meaning table. It does not assign a score,
-// establish risk, infer user counts, or require every optional field to exist.
-// Empty output means that there are no usable fields to display.
+// Summary formats usable source fields in a terminal-native table of the default
+// width. It assigns no score, risk level, or overall cleanliness judgment.
 func Summary(report Report) string {
-	type row struct{ field, status, meaning string }
-	var rows []row
+	return SummaryWidth(report, terminal.DefaultWidth)
+}
+
+// SummaryWidth wraps fields to fit the requested terminal width. Empty output
+// means that there are no usable source fields to display.
+func SummaryWidth(report Report, width int) string {
+	var rows []terminal.Row
 	if network := sourceLabel(report.NetworkType); network != "" {
-		rows = append(rows, row{"network", network, "Network classification reported by the provider."})
+		rows = append(rows, terminal.Row{Field: "network", Status: network, Meaning: "Network classification reported by the provider."})
 	}
 	// Zero is retained in the report but does not provide a useful sharing
 	// estimate. Omitting it does not imply zero users or an unused address.
 	if report.EstimatedDevices != nil && *report.EstimatedDevices > 0 {
-		rows = append(rows, row{"estimated devices", fmt.Sprint(*report.EstimatedDevices), "Estimated devices behind this IP, not people or concurrent users."})
+		rows = append(rows, terminal.Row{Field: "estimated devices", Status: fmt.Sprint(*report.EstimatedDevices), Meaning: "Estimated devices behind this IP, not people or concurrent users."})
 	}
 	for _, flag := range []struct {
 		label   string
@@ -43,7 +48,7 @@ func Summary(report Report) string {
 		if *flag.value {
 			value = "yes"
 		}
-		rows = append(rows, row{flag.label, value, flag.meaning})
+		rows = append(rows, terminal.Row{Field: flag.label, Status: value, Meaning: flag.meaning})
 	}
 
 	var eventKeys []string
@@ -58,24 +63,16 @@ func Summary(report Report) string {
 		if index >= maxDisplayedEvents {
 			break
 		}
-		rows = append(rows, row{"event: " + sourceLabel(kind), fmt.Sprint(report.AttackHistory[kind]), "Activity count reported by the provider; no local risk judgment."})
+		rows = append(rows, terminal.Row{Field: "event: " + sourceLabel(kind), Status: fmt.Sprint(report.AttackHistory[kind]), Meaning: "Activity count reported by the provider; no local risk judgment."})
 		displayed++
 	}
 	if omitted := len(eventKeys) - displayed; omitted > 0 {
-		rows = append(rows, row{"other event types", fmt.Sprint(omitted), "Additional event types omitted from this table."})
+		rows = append(rows, terminal.Row{Field: "other event types", Status: fmt.Sprint(omitted), Meaning: "Additional event types omitted from this table."})
 	}
 	if len(rows) == 0 {
 		return ""
 	}
-	var table strings.Builder
-	writer := tabwriter.NewWriter(&table, 0, 4, 1, ' ', 0)
-	fmt.Fprintln(writer, "| Field\t| Status\t| Meaning |")
-	fmt.Fprintln(writer, "| -----\t| ------\t| ------- |")
-	for _, row := range rows {
-		fmt.Fprintf(writer, "| %s\t| %s\t| %s |\n", row.field, row.status, row.meaning)
-	}
-	writer.Flush()
-	return strings.TrimSuffix(table.String(), "\n")
+	return terminal.Table(rows, width)
 }
 
 // Source labels are short data identifiers, not prose or terminal instructions.

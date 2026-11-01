@@ -21,13 +21,16 @@ type Source string
 const (
 	SourceExplicit    Source = "explicit"
 	SourceEnvironment Source = "environment"
+	SourceSystemProxy Source = "system-proxy"
 	SourceSystemRoute Source = "system-route"
 )
 
 // Client keeps the HTTP client together with its HTTPS routing source.
 type Client struct {
-	HTTP   *http.Client
-	Source Source
+	HTTP     *http.Client
+	Source   Source
+	Detail   string
+	Warnings []string
 }
 
 var errInvalidProxy = errors.New("invalid proxy URL; use http://, https://, socks5://, or socks5h:// with a valid host and port")
@@ -36,11 +39,10 @@ var errInvalidProxy = errors.New("invalid proxy URL; use http://, https://, sock
 // No direct connection is attempted when this error is returned.
 var ErrProxyBypass = errors.New("automatic proxy selection is blocked by NO_PROXY; specify --proxy to inspect that proxy")
 
-// NewClient snapshots the process proxy settings. A selected proxy is never
-// replaced by a direct connection after failure. Desktop system proxy settings
-// and PAC are not inspected in this implementation.
+// NewClient selects an explicit, environment, or enabled desktop proxy before
+// using the current system route. A selected proxy never falls back on failure.
 func NewClient(explicit string, timeout time.Duration) (*Client, error) {
-	return newClient(explicit, timeout, os.LookupEnv)
+	return newAutoClient(explicit, timeout, os.LookupEnv, discoverSystem)
 }
 
 func newClient(explicit string, timeout time.Duration, lookupEnv func(string) (string, bool)) (*Client, error) {
@@ -112,6 +114,7 @@ func newClient(explicit string, timeout time.Duration, lookupEnv func(string) (s
 	transport.ResponseHeaderTimeout = timeout
 	return &Client{
 		Source: source,
+		Detail: routeDetail(source),
 		HTTP: &http.Client{
 			Transport: &safeTransport{transport: transport},
 			Timeout:   timeout,

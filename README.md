@@ -1,8 +1,8 @@
 # iptest
 
-A cross-platform IP inspection command-line tool for personal use. It prioritizes the selected proxy's public egress IP and displays local interface addresses, public egress results, estimated locations, and available third-party IP facts in the terminal.
+A cross-platform IP and network inspection command-line tool. It automatically selects configured proxies or the current system route and displays interface traffic, public egress results, estimated locations, available third-party IP facts, and bounded HTTP performance measurements.
 
-> Project status: egress inspection, geolocation, and anonymous IP-source lookup. The CLI reads local interface addresses, detects public IPv4/IPv6 egress through an explicit proxy, environment proxy, or the current system route, then queries each observed IP's estimated location and proxycheck.io data in parallel. No registration, API key, email address, or data-source configuration is needed. Source availability is best effort: only useful returned facts are displayed, and failed queries produce a diagnostic without discarding other results. The tool does not assign an overall cleanliness or risk judgment. Saved configuration and desktop system proxy discovery remain planned.
+> Project status: automatic static-proxy discovery, interface traffic sampling, egress inspection, geolocation, anonymous IP-source lookup, and bounded download/HTTP latency measurements. Normal use requires no proxy arguments or API key. Missing application proxy settings use the current system route, which may include TUN/VPN. Explicit PAC scripts are detected but not evaluated; unresolved automatic discovery is disclosed. Only useful source fields are displayed, without an overall cleanliness judgment. Target-system runtime verification is still required.
 
 ## Goals
 
@@ -11,62 +11,105 @@ A cross-platform IP inspection command-line tool for personal use. It prioritize
 - Limit location details to country/region, state/province, and city.
 - Show useful source facts so the user can judge an IP's suitability, without a cleanliness score, blanket verdict, or local attention threshold.
 - Use free, anonymous data sources without requiring registration, API keys, or an email address.
+- Select the inspection path automatically, explain its source, and preserve proxy failures instead of silently switching routes.
+- Distinguish sampled interface traffic from a bounded, target-specific download and HTTP latency measurement.
 - Consider Android support through Termux in a later phase.
 
 ## Output Design
 
-The following example illustrates a successful `--family ipv4` inspection. The addresses and location are sample data, not actual inspection results:
+The following example illustrates a successful default IPv4 inspection. The addresses, location, speed, and timing are sample data, not actual inspection results:
 
 ```text
-Local interface IP: 192.168.1.20 (Ethernet)
-Public egress IP (IPv4): 203.0.113.10
-Estimated location (IPv4): Japan / Tokyo Metropolis / Tokyo
-IP source data (IPv4, proxycheck.io):
-| Field       | Status  | Meaning |
-| -----       | ------  | ------- |
-| network     | Hosting | Network classification reported by the provider. |
-| proxy       | no      | Whether the provider identifies this IP as a proxy. |
-| VPN         | no      | Whether the provider identifies this IP as a VPN exit. |
-| Tor         | no      | Whether the provider identifies this IP as a Tor exit. |
-| hosting     | yes     | Whether the provider flags a hosting/datacenter address. |
-| compromised | no      | Whether the provider flags this host as compromised. |
-| scraper     | no      | Whether the provider flags scraper activity from this IP. |
+iptest / Network inspection
+
+Connection
+----------------------------------------------------------------------------------------------------
++--------------+-----------------------------------------------------------------------------------+
+| Setting      | Value                                                                             |
++--------------+-----------------------------------------------------------------------------------+
+| Network path | explicit proxy                                                                    |
++--------------+-----------------------------------------------------------------------------------+
+
+Local network
+----------------------------------------------------------------------------------------------------
++---------------------+------------------------+---------------------------+-----------------------+
+| Interface           | Local IP               | Receive (KiB/s)           | Send (KiB/s)          |
++---------------------+------------------------+---------------------------+-----------------------+
+| Ethernet            | 192.168.1.20           | 2.00                      | 1.00                  |
++---------------------+------------------------+---------------------------+-----------------------+
+Traffic includes other applications; rates are shown once per interface. '-' means not sampled or
+not applicable.
+
+Public egress / IPv4
+----------------------------------------------------------------------------------------------------
++-----------+--------------------------------------------------------------------------------------+
+| Field     | Value                                                                                |
++-----------+--------------------------------------------------------------------------------------+
+| Public IP | 203.0.113.10                                                                         |
+| Location  | Japan / Tokyo Metropolis / Tokyo                                                     |
++-----------+--------------------------------------------------------------------------------------+
+
+IP source data / IPv4 / proxycheck.io
+----------------------------------------------------------------------------------------------------
++-------------------+--------+---------------------------------------------------------------------+
+| Field             | Status | Meaning                                                             |
++-------------------+--------+---------------------------------------------------------------------+
+| estimated devices | 2      | Estimated devices behind this IP, not people or concurrent users.   |
+| compromised       | no     | Whether the provider flags this host as compromised.                |
++-------------------+--------+---------------------------------------------------------------------+
+
+Network speed / automatic failover
+----------------------------------------------------------------------------------------------------
++------------------------------+---------------------------+---------------------+-----------------+
+| Target                       | Download (Mbps)           | HTTP (ms)           | Status          |
++------------------------------+---------------------------+---------------------+-----------------+
+| OVHcloud Singapore           | 16.78                     | 85.0                | OK              |
++------------------------------+---------------------------+---------------------+-----------------+
+OVHcloud Singapore: 2.00 MiB in 1.00 s.
+Total payload read: 2.00 MiB in 2.00 s, including failed attempts.
+Target-specific download estimate; HTTP response latency is not ICMP ping. '-' means not measured.
 ```
 
 Output rules:
 
-- Enumerate non-loopback addresses on active interfaces. List multiple interfaces by name; virtual interfaces may be included.
-- Check IPv4 and IPv6 separately. The default is `--family both`, which runs both families concurrently and prints results in IPv4/IPv6 order. Each family first detects its egress IP, then queries that exact IP's location and source data concurrently. Use `--family ipv4` or `--family ipv6` to request only one.
+- Default `--format report` groups connection settings, local interfaces/traffic, each egress family's IP/location/source facts, and speed targets into sections with native ASCII tables. It collects completed sections and writes the report at the end, including on cancellation, so progress does not interrupt tables. `--format plain` preserves the earlier line-oriented results. Help/version and invalid-configuration diagnostics do not create an empty report.
+- Report output adapts to 40–100 terminal cells and uses 100 cells when redirected. Long addresses, interface names, and source explanations wrap without losing values. No color, cursor movement, emoji, or Unicode border support is needed. Widths below 40 are outside the supported layout range.
+- Enumerate non-loopback addresses on active interfaces, filtered by `--family`. List multiple interfaces by name; virtual interfaces may be included.
+- Sample interface traffic before this invocation sends inspection or measurement requests. Rates include other applications and are displayed once per interface in the report, beside the first listed address, without summing physical and tunnel interfaces. A dash means no sample or no applicable value, not zero. Interfaces with counters but no selected-family address can still appear with a dash in the address column.
+- The default `--family ipv4` displays only IPv4 interface addresses and runs only IPv4 egress/location/source requests. Use `--family both` to add IPv6 with strict success requirements, or `--family ipv6` for IPv6 alone. Explicit `--family auto` probes both concurrently, keeps available results, and warns without failing solely because another family returned no address. Each successful family queries that exact observed IP's location and source data concurrently. This option selects inspected IP families; it does not force a proxy connection or speed-test transport to use a particular IP version.
 - Exclude unspecified, multicast, loopback, and link-local interface addresses. Private LAN and unique-local IPv6 addresses are retained.
 - Query geolocation for each observed IP explicitly. Display country/region, state/province, and city in that order, with `Unknown` for each missing level. A successful, matching response with all three levels missing is displayed as `Unknown / Unknown / Unknown` and is not a lookup failure.
 - Geolocation estimates the location associated with the observed egress IP. It does not identify a particular person, household, or street address.
 - Display an `IP source data` table only when useful provider fields are available. Each protocol family has its own source heading and three columns: Field, Status, and Meaning. The table contains network type, a positive address-level device estimate, explicit detection flags, or positive activity counts. Omit unavailable, invalid, empty, and uninformative fields without adding a verdict or placeholder.
+- Render tables with native ASCII borders and wrapped cells, without Markdown separators or terminal color sequences. Console width is detected on Windows, Linux, and macOS. The report uses 40–100 cells; plain-mode source tables support 40–240. Redirected output uses a stable width of 100 cells.
 - Write normal results to standard output and errors to standard error. Use exit codes to indicate execution status.
+- Write short phase progress messages to standard error. They remain plain text when output is redirected.
 - If a location lookup fails, retain the observed egress IP, show `Unknown (lookup failed)` for location, and write a diagnostic to standard error. If the IP-source lookup fails, omit its line and write a diagnostic to standard error, preserving successful egress and location results. If egress detection fails, skip both lookups, show `Unknown (egress unavailable)` for location, and omit the source-data line for that family.
 
 ## Proxy Selection
 
-Current precedence for HTTPS egress probes, geolocation, and IP-source requests:
+Current precedence for HTTPS egress probes, geolocation, IP-source requests, and active measurements:
 
 ```text
 Command-line --proxy
     > HTTPS_PROXY / https_proxy
     > ALL_PROXY / all_proxy
+    > Enabled desktop system proxy
     > Current system network path
 ```
 
 Uppercase environment variables take precedence over their lowercase variants. `HTTP_PROXY` / `http_proxy` are supported for HTTP requests, but the current public probes and lookup requests use HTTPS and therefore need `HTTPS_PROXY` or `ALL_PROXY`.
 
-Saved proxy configuration and desktop static proxy discovery are future work. This version does not read Windows desktop proxy settings, GNOME/KDE settings, or macOS system proxy settings. Set `--proxy` or the relevant environment variable when using a proxy that is configured only in a desktop application. Without a selected HTTPS proxy, the CLI writes a short explanation to standard error and uses the current system route, which may include a TUN interface or VPN.
+Static system proxy discovery reads current-user Windows settings, macOS proxy settings, and GNOME/KDE settings for the current Linux desktop. The selected source is displayed as `Network path`. Without an application proxy, requests follow the current system route, including TUN/VPN routing when active. This is not proof that the path is direct. Enabled but invalid proxy settings are reported instead of silently bypassed. Explicit PAC scripts are not evaluated. See [Network inspection](docs/network-inspection.md) for platform details, discovery limits, and measurement semantics.
 
 Current behavior and future requirements:
 
 1. Explicitly support proxy environment variables: select `HTTP_PROXY` or `HTTPS_PROXY` according to the request scheme, with `ALL_PROXY` as a fallback. Handle the corresponding lowercase variables and `NO_PROXY` exceptions.
 2. Honor a manually selected proxy without allowing environment-based bypass rules to change the inspection path unexpectedly.
-3. In automatic mode, refuse a request when `NO_PROXY` / `no_proxy` excludes a target that would otherwise use the selected proxy. Do not issue a direct request or present it as a proxy egress IP. To use that proxy for the target, specify `--proxy` explicitly. PAC configurations are not supported yet.
+3. In automatic mode, refuse a request when `NO_PROXY` / `no_proxy` or a supported desktop bypass rule excludes a target that would otherwise use the selected proxy. Do not issue a direct request or present it as a proxy egress IP. To inspect that proxy explicitly, specify `--proxy`. An explicit PAC configuration is reported as unsupported instead of evaluated. Unresolved automatic discovery is disclosed through a warning; see the platform limits in [Network inspection](docs/network-inspection.md#automatic-path-selection).
 4. Report connection failures, authentication failures, and timeouts for the selected proxy. Do not silently fall back to a direct connection.
 5. If no application-level proxy is found, use the current system network path, which may still traverse a TUN interface or VPN.
-6. Use the same HTTP client and proxy policy for both egress families and their geolocation and IP-source requests. Both lookup adapters explicitly query the IP already obtained.
+6. Use the same HTTP client and proxy policy for egress, location, source, and active measurement requests. Both IP-information adapters explicitly query the IP already obtained. Measurements describe their own target rather than claiming the same final exit under every split-routing policy.
 7. Preserve differences when targets or inspection times produce different egress IPs. Do not combine one IP's location with another IP's source data.
 
 HTTP and HTTPS proxies support CONNECT for HTTPS targets. `socks5://` and `socks5h://` both send the target hostname to the proxy in this Go implementation. A correct public IP result does not establish that all system traffic or DNS uses the same path.
@@ -87,8 +130,26 @@ On a host with a suitable Go environment, the application can be built with `go 
 The following examples assume the executable is on `PATH`:
 
 ```sh
-# Select the inspection path automatically
+# Select the inspection path automatically; inspect IPv4 only
 iptest
+
+# Add IPv6 inspection (both families are required)
+iptest --family both
+
+# Inspect whichever address families are available
+iptest --family auto
+
+# Compare all configured speed targets sequentially
+iptest --speedtest compare
+
+# Use the earlier line-oriented output
+iptest --format plain
+
+# Inspect IP information without active download measurements
+iptest --no-speedtest
+
+# Also skip passive interface sampling
+iptest --no-speedtest --no-traffic
 
 # Explicitly select an HTTP proxy
 iptest --proxy http://127.0.0.1:7890
@@ -115,7 +176,9 @@ After a successful probe, the CLI requests `https://ipwho.is/{IP}?fields=ip,succ
 
 The IP-source adapter requests `https://proxycheck.io/v3/{IP}?ver=24-June-2026&tag=0` for that same observed address. It uses anonymous access without a key or email address, through the same HTTP client and proxy policy. The API response version is pinned and query tagging is disabled. No registration or additional data-source configuration is required. Denied access, rate limits, invalid responses, mismatched IPs, and timeouts omit the source-data line and produce a safe diagnostic without retrying through a direct connection. See [IP Source Data](#ip-source-data) for displayed fields and [Data Sources](#data-sources) for anonymous-access limits.
 
-`--timeout` applies to each HTTP request, not the entire inspection. Each family runs an egress probe first, followed by parallel location and IP-source requests; these two waves can together take approximately twice the configured timeout. With `--family both`, the two family pipelines also run concurrently. `--help` and `--version` do not contact any service. There is no automatic retry or cache; each observed address receives at most one IP-source lookup per family per invocation.
+`--timeout` applies to each HTTP request, not the entire inspection. Each family runs an egress probe first, followed by parallel location and IP-source requests; these two waves can together take approximately twice the configured timeout. With `auto` or `both`, the two family pipelines also run concurrently. Discovery, interface sampling, and active measurements add time. Speed requests also have shorter stage and total limits described below. `--help` and `--version` do not inspect the network or contact any service. IP lookups have no automatic retry or cache; each observed address receives at most one IP-source lookup per family per invocation.
+
+Default `--speedtest auto` tries Cloudflare, OVHcloud Singapore, and OVHcloud Roubaix in order, stopping after a complete latency/download result. Failed targets retain the selected route; there is no direct fallback. `--speedtest compare` tests all three serially and prints each target's measurements or failure/skipped status, without averaging rates. Both modes preserve valid latency when a download fails. Default mode has a **20-second / 16 MiB** total budget; comparison has **30 seconds / 48 MiB**. Failed transfers and latency payloads consume the same byte budget. Each target has an eight-second limit, each latency request at most two seconds, and each download at most four seconds and 16 MiB; the inherited HTTP timeout may end a request sooner. Limits cover application-read response payloads, not HTTP/TLS overhead or transport buffering. The HTTP response latency is the median of three completed tiny requests, not ICMP ping. Rates are short target-specific estimates, not ISP capacity. No upload test or external speed-test executable is used. `--no-speedtest` skips either mode. See [Network inspection](docs/network-inspection.md#traffic-and-active-measurements) for protocols and limits.
 
 Egress responses are limited to 4 KiB, must contain one JSON value with a valid IP of the requested family, and are checked against private and non-public special-purpose ranges. These checks use the [IANA IPv4](https://www.iana.org/assignments/iana-ipv4-special-registry/) and [IPv6 special-purpose registries](https://www.iana.org/assignments/iana-ipv6-special-registry/); they do not establish live route reachability or IP reputation.
 
@@ -123,12 +186,12 @@ Exit codes:
 
 | Code | Meaning |
 | --- | --- |
-| `0` | Local interface enumeration and all requested egress and lookup requests succeeded; a valid response without useful source fields also succeeds |
-| `1` | Runtime failure or partial results, including an unavailable requested address family or a failed lookup |
+| `0` | Requested inspection and measurement stages succeeded; `auto` needs at least one successful egress family, and absent optional source fields do not fail |
+| `1` | Runtime failure or partial results, including failed requested measurements or lookups; explicit `both` requires both egress families |
 | `2` | Invalid arguments or proxy configuration |
 | `130` | Inspection canceled with Ctrl+C |
 
-With the default `both`, an IPv4-only connection can produce useful IPv4 output and exit `1` because IPv6 failed. Use `--family ipv4` when only IPv4 is required. A failed location or IP-source lookup produces exit `1` while preserving successful results. Missing location levels in an otherwise valid response do not count as failure. Missing source fields, including an otherwise valid all-null report, do not add a source-data line or an insufficient-data error. Returned values and activity counts do not change the exit code; exit codes describe execution status, not whether an IP is acceptable.
+Default IPv4 inspection does not probe IPv6. With explicit `--family auto`, a successful IPv4 probe remains usable when IPv6 returns no address; that alone does not cause exit `1`. Explicit `--family both` requires both families. Automatic speed-test failover succeeds when any target completes; preceding failures are diagnosed without failing that stage. Comparison returns `1` if any target fails or is skipped, while retaining other targets' results. A failed location, source lookup, interface sample, or active measurement preserves successful results and returns `1`. Missing optional source fields do not fail the invocation. Returned source flags and counts never change the exit code; exit codes describe execution status, not whether an IP is acceptable.
 
 Local configuration loading is not implemented or required for these lookups. The local configuration patterns in `.gitignore` reserve filenames for future use; they do not mean that automatic loading is already supported.
 
@@ -156,16 +219,19 @@ The provider's aggregate risk score is not displayed or transformed into a clean
 | Public egress detection | [ipify](https://www.ipify.org/) | Implemented: HTTPS IP echo, with separate IPv4/IPv6 checks |
 | Estimated geolocation | [ipwhois](https://ipwhois.io/documentation) | Implemented: free HTTPS lookup of the observed IP without an API key, returning country, state/province, and city |
 | IP-source facts and estimated sharing | [proxycheck.io v3](https://proxycheck.io/api/) | Implemented: anonymous HTTPS lookup of the observed IP, without registration, a key, an email address, or local configuration |
+| Bounded HTTP performance | [Cloudflare Speedtest](https://github.com/cloudflare/speedtest), [OVHcloud network tools](https://docs.ovhcloud.com/pt/guides/network/network-tools) | Implemented: embedded Go measurements, three public HTTPS targets, automatic failover or sequential comparison; no registration, key, external CLI, or upload |
 
 Anonymous proxycheck.io access is best effort. Its published no-key allowance is 100 queries per day, counted by the IP making the request; users sharing a proxy exit can share that allowance. The provider may deny anonymous requests from proxies, and data fields may be `null`. The tool cannot guarantee availability or populated fields and does not bypass the selected proxy to obtain them. Service limits and capabilities follow the provider's current documentation.
 
-The implemented adapters use bounded HTTP requests, validate responses and queried IPs, and report rate limits and lookup failures without silently changing routes. Geolocation handles missing location fields individually. Caching and automatic retries are not implemented. With both address families available, one run makes up to two IP-source lookups. Lookup services receive the queried IP and see the request's current outbound IP; keep proxy credentials and local inspection logs out of version control and redact credentials from errors and logs.
+The implemented adapters use bounded HTTP requests, validate responses and queried IPs, and report rate limits and lookup failures without silently changing routes. Geolocation handles missing location fields individually. IP lookups do not retry or cache; speed measurements may switch public targets within one shared budget. Public services are best effort and may be unavailable or rate-limited. With both address families requested, one run makes up to two IP-source lookups. Lookup services receive the queried IP and see the request's current outbound IP; keep proxy credentials and local inspection logs out of version control and redact credentials from errors and logs.
 
 ## Platforms and Technology
 
 The implementation uses Go and the standard library, with no external Go modules. Go is a development dependency: users of a compiled `iptest` executable do not need to install Go.
 
-The verification entries below include the source-facts output change: formatting, vet, package tests, and all six builds passed. Windows help/version and failed-proxy source-omission smoke checks also passed. Tests use local fixtures and mocked transports; they do not establish runtime compatibility on other operating systems.
+The network-optimization milestone passed formatting, vet, the full test suite, all six platform/architecture builds, and native Windows help/version and failed-proxy smoke checks. Local fixtures cover discovery, measurements, and rendering without external requests; fixture and cross-build results do not establish target-system runtime compatibility. The platform requirements and manual acceptance matrix are described in [Network inspection](docs/network-inspection.md#runtime-validation).
+
+On the Windows development host, earlier live checks automatically selected the current-user system proxy, sampled an active interface, obtained both public address families, and displayed source tables without manual proxy arguments. A subsequent `--no-traffic --speedtest compare --timeout 5s` check confirmed default IPv4 output without IPv6 output. Cloudflare's latency request returned EOF, while both OVHcloud targets completed valid latency/download samples. Comparison returned `1` for the failed target while retaining both successful samples and the IP results. Actual addresses were hidden in the verification log. No direct fallback or system proxy change was performed. These observations describe one host and path, not guaranteed future public-service availability.
 
 An earlier bounded live source check queried the fixed public IPv4 address `1.1.1.1` through the development host's current system route. The provider returned HTTP 200 with a compatible v3 response; its `null` attack history supplies no activity counts. That request did not discover or query the host's public egress IP. It does not verify the current output change, real proxy/node switching, live IPv6 results, or access from every proxy exit.
 
@@ -180,7 +246,7 @@ An earlier bounded live source check queried the fixed public IPv4 address `1.1.
 
 The goal is to share Linux builds across distributions with the same CPU architecture, while verifying execution on each distribution. Android requires separate work on interface enumeration, permissions, and proxy behavior.
 
-Local build artifacts are written to the ignored `bin` directory. Builds verified for this output change are `iptest.exe`, `iptest-windows-arm64.exe`, `iptest-linux-amd64`, `iptest-linux-arm64`, `iptest-darwin-amd64`, and `iptest-darwin-arm64`. Linux/macOS binaries copied from Windows may need their executable permission set with `chmod +x` on the target host.
+Local build artifacts are written to the ignored `bin` directory. Verified build targets are `iptest.exe`, `iptest-windows-arm64.exe`, `iptest-linux-amd64`, `iptest-linux-arm64`, `iptest-darwin-amd64`, and `iptest-darwin-arm64`. Linux/macOS binaries copied from Windows may need their executable permission set with `chmod +x` on the target host.
 
 ## Workspace-local Development Environment
 
@@ -281,10 +347,15 @@ iptest/
 ├── internal/
 │   ├── cli/        # Arguments, output, orchestration, and exit codes
 │   ├── netinfo/    # Local interface address enumeration
-│   ├── proxy/      # Explicit/environment proxy selection and transport
+│   ├── proxy/      # Explicit/environment/system proxy selection and transport
 │   ├── egress/     # Separate IPv4/IPv6 public IP probes
 │   ├── geolocation/ # Location lookups bound to each observed egress IP
-│   └── reputation/ # Anonymous IP-source lookup and useful-fact formatting
+│   ├── reputation/ # Anonymous IP-source lookup and useful-fact formatting
+│   ├── terminal/  # Native tables, wrapping, and console width
+│   ├── traffic/   # Passive interface-counter sampling
+│   └── speedtest/ # Bounded HTTP latency and download measurements
+├── docs/
+│   └── network-inspection.md # Routing, metrics, platform limits, and acceptance
 ├── scripts/
 │   ├── setup-go.ps1 # Download and verify the pinned SDK
 │   ├── go.ps1       # Run Go with a project-local environment
@@ -301,7 +372,7 @@ iptest/
 - Use the project-local Go launcher for development and validation. Keep the SDK under `.tools/go` and its cache/temporary state under `.cache/go`; do not install or configure a global Go environment for this project.
 - Use `main`, `develop`, and `feature/*` branches. Start routine changes on a feature branch from the latest `develop`; see [Contributing](CONTRIBUTING.md).
 - Use UTF-8 for source files, LF line endings for regular text, and `gofmt` for Go code.
-- Keep the implementation small. Separate command entry points, proxy handling, egress detection, geolocation, and reputation logic as needed.
+- Keep the implementation small. Separate command entry points, path discovery, IP lookups, interface counters, active measurements, and terminal rendering as needed.
 - Validate key behaviors: no direct fallback after proxy failure, fixed-IP lookups, IPv4/IPv6, parallel lookup isolation, API rate limits, independent source fields, and omission of unavailable data without an aggregate judgment.
 - Keep business logic independent of terminal presentation to support future platform integration.
 - Make small commits, each focused on one clear change. Use prefixes such as `docs:`, `feat:`, `fix:`, `test:`, and `chore:`.
@@ -325,7 +396,16 @@ Run these checks through the project launcher:
 - [x] Implement the CLI command entry point.
 - [x] Implement interface enumeration, manual proxies, and proxy environment variables.
 - [x] Implement separate IPv4/IPv6 public egress detection.
-- [ ] Implement platform-specific static proxy discovery.
+- [x] Implement platform-specific static proxy discovery and disclose unsupported automatic configurations.
+- [x] Display the selected network path without assuming a system route is direct.
+- [x] Default to IPv4-only inspection; support explicit IPv6, strict dual-stack, and available-family modes.
+- [x] Sample per-interface receive/send rates before network requests.
+- [x] Add bounded target-specific HTTP latency and download measurements with opt-out flags.
+- [x] Add public speed-target failover and optional sequential comparison with shared time/byte budgets.
+- [x] Group default results into a width-aware terminal report, retaining optional plain output.
+- [x] Render width-aware native ASCII source-data tables.
+- [x] Validate optimization fixtures and rebuild all six platform/architecture targets.
+- [x] Obtain successful live download measurements through the Windows host's selected path; additional proxy/network paths remain to be checked.
 - [x] Integrate free geolocation lookups for each observed egress IP.
 - [x] Verify geolocation response/IP consistency and partial-failure output using local fixtures.
 - [x] Integrate anonymous proxycheck.io v3 source data and address-level device estimates without registration or API keys.
