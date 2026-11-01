@@ -8,20 +8,23 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
 	"unicode"
 
 	"github.com/ObsidianLoneCrane/iptest/internal/egress"
+	"github.com/ObsidianLoneCrane/iptest/internal/geolocation"
 	"github.com/ObsidianLoneCrane/iptest/internal/netinfo"
 	"github.com/ObsidianLoneCrane/iptest/internal/proxy"
 )
 
 const help = `Usage: iptest [options]
 
-Inspect local interface IP addresses and public egress IP addresses.
-Location and reputation lookups are planned; this version reports them as Unknown.
+Inspect local interface IP addresses, public egress IP addresses, and their
+estimated country/region, state/province, and city. Reputation checks are
+planned; this version reports reputation as Unknown.
 
 Options:
   --proxy URL       Use an explicit HTTP, HTTPS, SOCKS5, or SOCKS5H proxy.
@@ -29,6 +32,7 @@ Options:
   --family FAMILY   ipv4, ipv6, or both (default: both).
   --timeout DURATION
                     Per-request timeout, such as 10s (default: 10s).
+                    Egress detection and geolocation are separate requests.
   --version         Print the development version without network requests.
   --help, -h        Show this help without network requests.
 
@@ -41,7 +45,7 @@ Environment:
   that route may still traverse a TUN interface or VPN.
 
 Exit codes:
-  0  All requested egress families and local interface enumeration succeeded.
+  0  Requested egress probes, geolocation lookups, and interface reads succeeded.
   1  Inspection failed or only partial results are available.
   2  Invalid arguments or proxy configuration.
   130  Inspection canceled.
@@ -51,10 +55,15 @@ type detector interface {
 	Detect(context.Context, egress.Family) (egress.Observation, error)
 }
 
+type geolocator interface {
+	Lookup(context.Context, netip.Addr) (geolocation.Location, error)
+}
+
 type dependencies struct {
 	interfaces func() ([]netinfo.Address, error)
 	client     func(string, time.Duration) (*proxy.Client, error)
 	detector   func(*http.Client) detector
+	geolocator func(*http.Client) geolocator
 }
 
 // Run executes one invocation. Only the caller decides whether to exit the process.
@@ -63,6 +72,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		interfaces: netinfo.List,
 		client:     proxy.NewClient,
 		detector:   func(client *http.Client) detector { return egress.New(client) },
+		geolocator: func(client *http.Client) geolocator { return geolocation.New(client) },
 	})
 }
 
@@ -148,15 +158,22 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, deps depe
 	type result struct {
 		observation egress.Observation
 		err         error
+		location    geolocation.Location
+		locationErr error
 	}
 	results := make([]result, len(families))
 	service := deps.detector(route.HTTP)
+	locations := deps.geolocator(route.HTTP)
 	var pending sync.WaitGroup
 	for index, requested := range families {
 		pending.Add(1)
 		go func(index int, requested egress.Family) {
 			defer pending.Done()
-			results[index].observation, results[index].err = service.Detect(ctx, requested)
+			entry := &results[index]
+			entry.observation, entry.err = service.Detect(ctx, requested)
+			if entry.err == nil {
+				entry.location, entry.locationErr = locations.Lookup(ctx, entry.observation.IP)
+			}
 		}(index, requested)
 	}
 	pending.Wait()
@@ -168,22 +185,41 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, deps depe
 		entry := results[index]
 		if entry.err != nil {
 			fmt.Fprintf(stdout, "Public egress IP (%s): Unknown (detection failed)\n", label)
-			message := terminalText(entry.err.Error())
-			if errors.Is(entry.err, proxy.ErrProxyBypass) {
-				message = proxy.ErrProxyBypass.Error()
-			}
-			fmt.Fprintf(stderr, "iptest: %s egress detection failed: %s\n", label, message)
+			fmt.Fprintf(stderr, "iptest: %s egress detection failed: %s\n", label, diagnostic(entry.err))
+			fmt.Fprintf(stdout, "Estimated location (%s): Unknown (egress unavailable)\n", label)
 			exitCode = 1
 		} else {
 			fmt.Fprintf(stdout, "Public egress IP (%s): %s\n", label, entry.observation.IP)
+			if entry.locationErr != nil {
+				fmt.Fprintf(stdout, "Estimated location (%s): Unknown (lookup failed)\n", label)
+				fmt.Fprintf(stderr, "iptest: %s geolocation lookup failed: %s\n", label, diagnostic(entry.locationErr))
+				exitCode = 1
+			} else {
+				fmt.Fprintf(stdout, "Estimated location (%s): %s / %s / %s\n", label,
+					locationField(entry.location.Country), locationField(entry.location.Region), locationField(entry.location.City))
+			}
 		}
-		fmt.Fprintf(stdout, "Estimated location (%s): Unknown (not implemented)\n", label)
 		fmt.Fprintf(stdout, "IP reputation (%s): Unknown (not implemented)\n", label)
 	}
 	if errors.Is(ctx.Err(), context.Canceled) {
 		return 130
 	}
 	return exitCode
+}
+
+func diagnostic(err error) string {
+	if errors.Is(err, proxy.ErrProxyBypass) {
+		return proxy.ErrProxyBypass.Error()
+	}
+	return terminalText(err.Error())
+}
+
+func locationField(value string) string {
+	value = strings.TrimSpace(terminalText(value))
+	if value == "" {
+		return "Unknown"
+	}
+	return value
 }
 
 func terminalText(value string) string {

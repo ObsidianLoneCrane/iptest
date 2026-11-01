@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ObsidianLoneCrane/iptest/internal/egress"
+	"github.com/ObsidianLoneCrane/iptest/internal/geolocation"
 	"github.com/ObsidianLoneCrane/iptest/internal/netinfo"
 	"github.com/ObsidianLoneCrane/iptest/internal/proxy"
 )
@@ -19,6 +20,12 @@ type detectorFunc func(context.Context, egress.Family) (egress.Observation, erro
 
 func (function detectorFunc) Detect(ctx context.Context, family egress.Family) (egress.Observation, error) {
 	return function(ctx, family)
+}
+
+type geolocatorFunc func(context.Context, netip.Addr) (geolocation.Location, error)
+
+func (function geolocatorFunc) Lookup(ctx context.Context, ip netip.Addr) (geolocation.Location, error) {
+	return function(ctx, ip)
 }
 
 func successfulDependencies() dependencies {
@@ -36,6 +43,14 @@ func successfulDependencies() dependencies {
 					ip = "2001:db8::10"
 				}
 				return egress.Observation{Family: family, IP: netip.MustParseAddr(ip)}, nil
+			})
+		},
+		geolocator: func(*http.Client) geolocator {
+			return geolocatorFunc(func(_ context.Context, ip netip.Addr) (geolocation.Location, error) {
+				if ip.Is6() {
+					return geolocation.Location{Country: "Canada", Region: "Quebec", City: "Montreal"}, nil
+				}
+				return geolocation.Location{Country: "Japan", Region: "Tokyo Metropolis", City: "Tokyo"}, nil
 			})
 		},
 	}
@@ -118,8 +133,11 @@ func TestBothFamiliesAreConcurrentAndOutputIsOrdered(t *testing.T) {
 	if code != 0 || stderr.Len() != 0 || index4 < 0 || index6 <= index4 {
 		t.Fatalf("code = %d, stdout = %q, stderr = %q", code, text, stderr.String())
 	}
-	if strings.Count(text, "IP reputation (") != 2 || strings.Count(text, "Estimated location (") != 2 || strings.Contains(text, "No known risk") {
-		t.Fatalf("unimplemented lookups must stay Unknown: %q", text)
+	if !strings.Contains(text, "Estimated location (IPv4): Japan / Tokyo Metropolis / Tokyo") || !strings.Contains(text, "Estimated location (IPv6): Canada / Quebec / Montreal") {
+		t.Fatalf("geolocation results were not associated with their families: %q", text)
+	}
+	if strings.Count(text, "IP reputation (") != 2 || strings.Count(text, "Unknown (not implemented)") != 2 || strings.Contains(text, "No known risk") {
+		t.Fatalf("unimplemented reputation must stay Unknown: %q", text)
 	}
 }
 
