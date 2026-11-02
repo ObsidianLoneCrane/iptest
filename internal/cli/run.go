@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/ObsidianLoneCrane/iptest/internal/buildinfo"
 	"github.com/ObsidianLoneCrane/iptest/internal/egress"
 	"github.com/ObsidianLoneCrane/iptest/internal/geolocation"
 	"github.com/ObsidianLoneCrane/iptest/internal/netinfo"
@@ -45,7 +46,7 @@ Options:
                     Per-request timeout, such as 10s (default: 10s).
                     Egress is followed by parallel location/source requests.
                     A family can take approximately twice this timeout.
-  --version         Print the development version without network requests.
+  --version         Print version/build metadata without network requests.
   --help, -h        Show this help without network requests.
 
 Environment:
@@ -129,7 +130,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, deps depe
 		return 2
 	}
 	if *version {
-		fmt.Fprintln(stdout, "iptest dev")
+		fmt.Fprintln(stdout, buildinfo.String())
 		return 0
 	}
 	var families []egress.Family

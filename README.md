@@ -4,6 +4,12 @@ A cross-platform IP and network inspection command-line tool. It automatically s
 
 > Project status: automatic static-proxy discovery, interface traffic sampling, egress inspection, geolocation, anonymous IP-source lookup, and bounded download/HTTP latency measurements. Normal use requires no proxy arguments or API key. Missing application proxy settings use the current system route, which may include TUN/VPN. Explicit PAC scripts are detected but not evaluated; unresolved automatic discovery is disclosed. Only useful source fields are displayed, without an overall cleanliness judgment. Target-system runtime verification is still required.
 
+Release preparation includes MIT licensing, build-version metadata, archive and
+checksum tooling, and a six-target native CI configuration. A public executable
+release is not yet published; first native CI runs and remaining desktop/download
+acceptance are pending. See [Releasing](docs/releasing.md) and
+[user installation instructions](docs/install.md).
+
 ## Goals
 
 - Use the same inspection logic on Windows, Ubuntu, Arch Linux, CachyOS, and macOS.
@@ -14,6 +20,7 @@ A cross-platform IP and network inspection command-line tool. It automatically s
 - Select the inspection path automatically, explain its source, and preserve proxy failures instead of silently switching routes.
 - Distinguish sampled interface traffic from a bounded, target-specific download and HTTP latency measurement.
 - Consider Android support through Termux in a later phase.
+- Publish ready-to-run packages for Windows, Linux, and macOS only after native runtime and final-package acceptance on every advertised OS/CPU target.
 
 ## Output Design
 
@@ -163,7 +170,7 @@ iptest --proxy http://127.0.0.1:7890 --family ipv4 --timeout 5s
 # Inspect only IPv6
 iptest --family ipv6
 
-# Print help or the development version without network requests
+# Print help or version/build metadata without network requests
 iptest --help
 iptest --version
 ```
@@ -247,6 +254,15 @@ An earlier bounded live source check queried the fixed public IPv4 address `1.1.
 The goal is to share Linux builds across distributions with the same CPU architecture, while verifying execution on each distribution. Android requires separate work on interface enumeration, permissions, and proxy behavior.
 
 Local build artifacts are written to the ignored `bin` directory. Verified build targets are `iptest.exe`, `iptest-windows-arm64.exe`, `iptest-linux-amd64`, `iptest-linux-arm64`, `iptest-darwin-amd64`, and `iptest-darwin-arm64`. Linux/macOS binaries copied from Windows may need their executable permission set with `chmod +x` on the target host.
+
+Formal releases require native runtime evidence and extracted-package acceptance
+on every advertised Windows/Linux/macOS CPU target. Users must not need Go or the
+project's development environment. Cross-builds alone do not satisfy this gate.
+Linux desktop/session integration and downloaded macOS first launch need explicit
+acceptance beyond headless CI. Archive/checksum tooling and the native CI matrix
+are implemented; CI results, the supported-version record, and downloaded-package
+acceptance are still pending. See
+[Releasing](docs/releasing.md) for the required process and current gaps.
 
 ## Workspace-local Development Environment
 
@@ -341,11 +357,16 @@ iptest/
 ├── README.md       # Scope, technical plan, and development progress
 ├── CONTRIBUTING.md # Branching, commits, validation, and merge workflow
 ├── AGENTS.md       # Project rules for coding agents
+├── LICENSE         # MIT license
+├── CHANGELOG.md    # Unreleased changes and known acceptance gaps
 ├── go.mod          # Module path and minimum Go version
 ├── .go-version     # SDK version used by the project-local launcher
 ├── cmd/iptest/     # Executable entry point
+├── cmd/releasepack/ # Maintainer-only archive and checksum tool
 ├── internal/
 │   ├── cli/        # Arguments, output, orchestration, and exit codes
+│   ├── buildinfo/  # Injected release version, commit, and date
+│   ├── releasepack/ # Archive metadata, executable modes, and checksums
 │   ├── netinfo/    # Local interface address enumeration
 │   ├── proxy/      # Explicit/environment/system proxy selection and transport
 │   ├── egress/     # Separate IPv4/IPv6 public IP probes
@@ -355,12 +376,17 @@ iptest/
 │   ├── traffic/   # Passive interface-counter sampling
 │   └── speedtest/ # Bounded HTTP latency and download measurements
 ├── docs/
+│   ├── install.md  # Instructions bundled with user packages
+│   ├── releasing.md # Persistent release workflow and native acceptance
 │   └── network-inspection.md # Routing, metrics, platform limits, and acceptance
+├── .github/workflows/native.yml # Six-target native checks and candidate artifacts
 ├── scripts/
 │   ├── setup-go.ps1 # Download and verify the pinned SDK
 │   ├── go.ps1       # Run Go with a project-local environment
 │   ├── go-common.ps1 # Shared toolchain paths and environment settings
 │   ├── go-checksums.json # Reviewed official SDK archive checksums
+│   ├── build-release.ps1 # Build candidate archives with the local Windows SDK
+│   ├── smoke-package.ps1 # Verify and execute an extracted native package
 │   └── clean-go.ps1 # Remove only the temporary SDK and Go state
 ├── .gitignore      # Build artifacts and local configuration exclusions
 └── .gitattributes  # Cross-platform line-ending rules
@@ -390,7 +416,7 @@ Run these checks through the project launcher:
 - [x] Define the scope and output format for a personal CLI.
 - [x] Create the README, Git ignore rules, and line-ending conventions.
 - [x] Initialize the Git repository and complete the first push to GitHub.
-- [x] Define the `main`, `develop`, and `feature/*` branching and merge workflow.
+- [x] Define persistent `main`, `develop`, and `release` branches with short-lived `feature/*` tasks.
 - [x] Initialize the Go module.
 - [x] Verify SDK setup, compilation, environment restoration, and cleanup previews on the Windows development host.
 - [x] Implement the CLI command entry point.
@@ -416,7 +442,14 @@ Run these checks through the project launcher:
 - [x] Validate the source-facts output change and rebuild all six platform/architecture targets.
 - [ ] Verify real proxy/node changes and target-system runtime behavior.
 - [ ] Verify behavior and build executables for the target systems.
+- [x] Configure six native Windows/Linux/macOS OS/CPU CI jobs and candidate-package checks.
+- [x] Add release version metadata, MIT licensing, packaging, checksums, and download instructions.
+- [ ] Obtain passing native CI results and complete desktop/download acceptance before formal publication.
 - [ ] Evaluate Android support through Termux.
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
 
 ## Repository and Branch Workflow
 
@@ -424,17 +457,25 @@ Repository: [ObsidianLoneCrane/iptest](https://github.com/ObsidianLoneCrane/ipte
 
 | Branch | Purpose | Updates |
 | --- | --- | --- |
-| `main` | Stable releases | Merge verified versions from `develop` |
-| `develop` | Integration for ongoing development | Accept completed `feature/*` branches and sync `main` after releases |
-| `feature/*` | Individual features, fixes, documentation, and tests | Branch from the latest `develop` and merge back when complete |
+| `main` | Published versions | Accept approved candidates from `release`; retain between releases |
+| `develop` | Ongoing integration | Accept routine tasks and release-fix/main synchronization; retain between releases |
+| `release` | One frozen candidate at a time | Receive a selected `develop` snapshot, candidate fixes, and published-main synchronization; retain between releases |
+| `feature/*` | Individual tasks | Normally branch from and target `develop`; candidate fixes branch from and target `release`; clean up completed tasks |
 
 ```text
-develop -> feature/task-name -> develop -> main
-                                 ^          |
-                                 |__________|
-                                 Sync after release
+develop -> feature/task-name -> develop -> release -> main -> version tag/assets
+                                  ^          ^         |
+                                  |__________|_________|
+                                  Sync published main into both branches
+
+release -> feature/candidate-fix -> release -> develop (regular synchronization)
 ```
 
-Use squash merge by default for `feature/* -> develop`. Use a regular merge for `develop -> main` to preserve the history of long-lived branches.
+Use squash merge by default for task PRs. Use regular merges for `develop -> release`,
+`release -> main`, and synchronization between all long-lived branches. Keep the
+single `release` branch between versions; do not create a new `release/*` branch
+for each tag. Candidate validation must finish before formal publication.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for starting tasks, syncing across machines, checking commits, and merging changes. Coding agents must also follow the root [AGENTS.md](AGENTS.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md) for task/merge conventions and
+[Releasing](docs/releasing.md) for native acceptance and publication. Coding agents
+must also follow the root [AGENTS.md](AGENTS.md).
