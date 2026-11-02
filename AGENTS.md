@@ -5,11 +5,12 @@ This file applies to the entire repository. Read [README.md](README.md) and [CON
 ## Branch Workflow
 
 - Check the current branch, working-tree changes, and relevant remote state before starting a task.
-- Use `main`, `develop`, and `feature/*` branches. Make feature, fix, refactoring, documentation, test, and configuration changes on `feature/*` branches.
-- Create task branches from the latest `develop`. An existing, unmerged feature branch may be reused if it is suitable for the current task.
-- Do not perform routine development directly on `main` or `develop`; syncing and merging branches through the established workflow are exceptions.
-- Use squash merge by default for `feature/* -> develop`. Pull requests must explicitly target `develop`.
-- Use a regular merge for `develop -> main` to preserve history. After a release, merge `main -> develop` using a regular merge; allow a fast-forward when possible.
+- Keep `main`, `develop`, and the single `release` branch long-lived. Use short-lived `feature/*` branches for feature, fix, refactoring, documentation, test, and configuration changes. Do not create version-specific `release/*` branches or delete a long-lived branch after merging a PR.
+- Create routine task branches from the latest `develop`. An existing, unmerged feature branch may be reused if suitable. A fix specifically for a frozen release candidate branches from `release` and targets `release`; synchronize the fix back to `develop` through a regular merge.
+- Do not perform routine development directly on `main`, `develop`, or `release`; reviewed promotions and synchronization merges are exceptions.
+- Use squash merge by default for `feature/* -> develop` and candidate-fix `feature/* -> release`. Confirm the intended PR target explicitly.
+- Promote a selected candidate using `develop -> release`, then publish approved candidates using `release -> main`. Use regular merges between all long-lived branches; never squash/rebase those promotions. After publication, synchronize `main -> release` and `main -> develop` using regular merges, allowing fast-forwards when possible.
+- Freeze one candidate at a time on `release`. Do not automatically pull newer `develop` features into an active candidate; any candidate change requires the affected validation to run again. Record the candidate commit and the final tag/artifact checksums.
 - Do not reuse a squash-merged feature branch for a new task, rewrite shared branch history, or automatically force-delete branches.
 - Preserve existing user changes. Do not automatically discard, overwrite, or hide unrelated changes.
 - Act within the scope already authorized in the current conversation. This file defines the workflow; it does not mean that every commit, push, or release has been requested.
@@ -25,6 +26,8 @@ This file applies to the entire repository. Read [README.md](README.md) and [CON
 - Prioritize the selected proxy. Do not silently fall back to a direct connection after a proxy failure. Once an egress IP is obtained, explicitly query that same IP with subsequent data sources.
 - Omit missing, invalid, empty, or unusable source fields. Preserve explicit boolean false values as source facts; a zero device estimate is not proof of zero users and is omitted. Missing optional source data alone is not an inspection failure. Report actual lookup failures through safe diagnostics, and never interpret missing data as a clean reputation.
 - Do not present unfinished features or planned commands as implemented, or cross-compilation results as successful runtime verification.
+- A formal release must provide ready-to-run Windows, Linux, and macOS artifacts and native runtime evidence for every advertised OS/CPU target. Validate extracted final packages without a Go SDK or development environment; record platform versions and required OS utilities. Include desktop proxy/counter acceptance for advertised Linux distributions and macOS, plus downloaded-package first launch and executable permissions. Public-service availability is separate from application/platform correctness. See `docs/releasing.md`; configured CI is not evidence that its jobs have actually passed.
+- Use the MIT license in `LICENSE`, include it in release packages, and preserve its copyright/license notice. Package Windows as ZIP and Linux/macOS as tar.gz with executable mode preserved. Candidate builds and GitHub Actions artifacts are not automatically published Releases.
 - Keep the implementation small, favor the standard library and pure Go dependencies, and organize code according to actual needs.
 
 ## Project-local Go Environment
@@ -38,6 +41,7 @@ This file applies to the entire repository. Read [README.md](README.md) and [CON
 - Disable telemetry through the official `go telemetry off` command with project-local configuration storage. `GOTELEMETRY` is a read-only status query, not an environment variable to set for disabling telemetry.
 - Use `.\scripts\clean-go.ps1 -WhatIf` to preview cleanup. The cleanup script removes only `.tools/go` and `.cache/go`, retaining source files and application outputs in `bin`.
 - Go is a development dependency. Users of the compiled application do not need Go installed.
+- On disposable GitHub-hosted runners only, the native validation workflow may use official `actions/setup-go` with `.go-version` and invoke that provisioned SDK directly. Runner-managed SDK/telemetry configuration is ephemeral; build/module/temp state stays under workspace `.cache/go`. Disable telemetry with `go telemetry off`, keep `GOENV=off`, `GOTOOLCHAIN=local`, and `CGO_ENABLED=0`, and do not persist user configuration. This CI-only allowance does not replace the project-local launcher requirement on the development host.
 - Verify scripts on each target host before claiming support. The current environment scripts support Windows only; Linux/macOS setup is future work and needs separate implementation and verification. Do not infer Android support from the Go environment setup.
 
 ## Changes and Validation

@@ -233,6 +233,12 @@ contribute to total runtime.
 
 ## Runtime Validation
 
+Formal publication follows [Releasing](releasing.md): the persistent `release`
+branch holds the frozen candidate, and every advertised Windows/Linux/macOS
+OS/CPU target needs native runtime and final-package acceptance. Cross-builds
+and this milestone's fixtures do not complete that gate. Native CI and release
+packaging are configured; native CI execution and remaining acceptance are pending.
+
 Fixture tests and cross-compilation are development checks. They cannot confirm
 that each host exposes the same configuration, that a proxy node is reachable,
 or that a provider currently accepts anonymous requests from that exit. Current
@@ -254,12 +260,14 @@ manual acceptance work remains required on actual target hosts:
 
 ## Reviewing and Submitting This Milestone
 
-Keep the related optimizations on `feature/network-optimization` and group
+The completed optimization milestone used `feature/network-optimization`, grouping
 commits by function: terminal rendering, automatic proxy discovery, passive and
 active network measurement, CLI integration/report presentation, then documentation. Include each
-module's tests with its implementation. This grouping describes the final
+module's tests with its implementation. This historical grouping describes the final
 implementation and does not require committing historical intermediate designs.
 
-After validation and review, the feature PR targets `develop` and normally uses
-squash merge. Updating documentation does not itself authorize a commit, push,
-PR, merge, or release.
+New routine tasks branch from the current `develop`; do not reuse that completed
+feature branch. Routine feature PRs target `develop` and normally use squash
+merge. Candidate fixes and publication follow [Releasing](releasing.md).
+Updating documentation does not itself authorize a commit, push, PR, merge, or
+publication.

@@ -1,14 +1,15 @@
 # Contributing
 
-This project is a Go command-line tool for personal use. It uses `main`, `develop`, and `feature/*` branches to keep tasks focused and commits concise. See [README.md](README.md) for the project scope and feature boundaries.
+This project is a cross-platform Go command-line tool. It keeps `main`, `develop`, and `release` as long-lived branches and uses short-lived `feature/*` branches for individual tasks. See [README.md](README.md) for scope and [Releasing](docs/releasing.md) for candidate promotion and cross-platform acceptance.
 
 ## Branch Responsibilities
 
 | Branch | Purpose | Rules |
 | --- | --- | --- |
-| `main` | Stable releases | Accept verified versions from `develop`; do not perform routine development directly on this branch |
-| `develop` | Integrate changes for the next version | Accept task branches; do not perform routine development directly on this branch |
-| `feature/*` | Individual development tasks | Branch from the latest `develop` and merge back when complete |
+| `main` | Published versions | Accept approved candidates from `release`; retain this branch after release PRs |
+| `develop` | Integration for ongoing development | Accept routine task branches and release-fix synchronization; retain this branch after promotion PRs |
+| `release` | One frozen release candidate at a time | Accept a selected `develop` snapshot, candidate fixes, and synchronization from `main`; retain this branch between versions |
+| `feature/*` | Individual development tasks | Normally branch from `develop` and merge back; candidate fixes branch from and target `release` |
 
 Use `feature/*` for features, fixes, refactoring, documentation, tests, and tool configuration changes. Examples:
 
@@ -19,7 +20,7 @@ feature/fix-proxy-timeout
 feature/docs-branch-workflow
 ```
 
-Use lowercase English letters, digits, and hyphens in branch names. Keep each branch focused on one task and retire it when that task is complete. Additional branch types such as `release/*` and `hotfix/*` are not used at this stage.
+Use lowercase English letters, digits, and hyphens in task branch names. Keep each task branch focused and retire it after integration. The literal branch `release` is persistent; version-specific `release/*` and `hotfix/*` branches are not used. Versions are recorded by tags, not by replacing or renaming the persistent branch.
 
 ## Starting a Task
 
@@ -78,6 +79,18 @@ To remove the temporary environment, preview `.\scripts\clean-go.ps1 -WhatIf`, t
 
 The current environment scripts support Windows only. Linux/macOS setup is future work and must be implemented and validated separately. Android support remains outside the current setup scope. See [README.md](README.md#workspace-local-development-environment) for the full environment and cleanup guide.
 
+The native GitHub Actions workflow is a separate, disposable-runner environment:
+official `actions/setup-go` provisions `.go-version`, jobs invoke that SDK directly,
+and build/module/temp state stays under workspace `.cache/go`. SDK/telemetry state
+on the temporary runner does not persist on the development host. This CI-only
+allowance does not replace the Windows project-local launcher. Native CI must run
+before its configured checks are described as passing.
+
+Release candidates can be packaged on the Windows development host with
+`scripts/build-release.ps1`; extracted native packages are checked with
+`scripts/smoke-package.ps1`. See [Releasing](docs/releasing.md#implemented-tooling)
+for commands, version metadata, supported archive formats, and remaining acceptance.
+
 When updating the development SDK, update `.go-version` and the matching entries in `scripts/go-checksums.json` together. Verify the hashes against the [official Go downloads](https://go.dev/dl/) before running setup. Do not automatically select a different SDK or relax checksum verification when a pinned archive is missing.
 
 ## Commits and Validation
@@ -120,40 +133,83 @@ Match validation to the scope of the change:
 4. Select **Squash and merge** by default to integrate one task as a single clear commit.
 5. After merging, start new work on a new feature branch from the latest `develop`. Do not continue reusing a branch that has already been squash-merged.
 
+A fix needed by an active frozen candidate is the exception: branch a new
+`feature/*` from the latest `release`, target `release`, and normally squash that
+task PR. Keep unrelated `develop` work out of the candidate. Synchronize accepted
+candidate fixes back through a regular `release -> develop` PR; a final
+`main -> develop` synchronization also carries accepted release fixes. Do not
+cherry-pick or duplicate the same fix by default. Revalidate the changed candidate.
+
 Local merges must follow the same source, target, and validation requirements. When a shared feature branch needs an updated base, prefer merging the latest `develop` into it rather than rewriting shared history.
 
 Before deleting a task branch, confirm that its PR was merged and that the source branch contains no additional unmerged commits. A squash merge does not preserve the source commits' ancestry, so the success or failure of `git branch -d` alone does not establish whether the content was integrated. Do not automatically force-delete branches.
 
-## Merging develop into main
+## Promoting develop into release
 
-1. Update `develop` and confirm the intended release changes and validation results.
-2. Create a release PR with **base set to `main` and compare set to `develop`**.
-3. Use **Create a merge commit**, a regular merge. Do not squash-merge or rebase-merge the long-lived `develop` branch.
-4. After the release merge, sync `main` back into `develop` before starting the next round of tasks.
+1. Finish the previous release cycle and confirm that no other candidate is active.
+2. Choose the intended `develop` snapshot and review its changes against `release`.
+3. Open a promotion PR with **base `release`, compare `develop`**. Before merging,
+   confirm the head commit is the intended snapshot; later `develop` commits can
+   change an open PR's contents.
+4. Use **Create a merge commit**. Record the resulting `release` commit as the
+   candidate and run the required native platform and package checks.
+5. Keep the candidate frozen while `develop` continues. Accept only candidate
+   fixes through task PRs; do not automatically merge new features from `develop`.
 
-A regular merge preserves the shared history of `main` and `develop`, preventing previously integrated commits from reappearing after repeated squash merges of a long-lived branch.
+Initialize `release` once from the published baseline on `main` if it does not
+already exist, then publish it with its own upstream. Do not recreate it for each
+version or make it track `origin/main`. See [Releasing](docs/releasing.md) for the
+bootstrap commands and the acceptance requirements that are still pending.
 
-With a clean working tree, sync the release changes as follows:
+## Publishing release into main
+
+1. Complete the cross-platform acceptance in [Releasing](docs/releasing.md) for
+   every OS/CPU combination included in the release. A Windows cross-build alone
+   does not establish Linux/macOS readiness.
+2. Open the publishing PR with **base `main`, compare `release`**.
+3. Use **Create a merge commit**. Do not squash or rebase this long-lived branch.
+4. Verify that the final source tree on `main` matches the approved candidate,
+   create the version tag on that `main` commit, and verify the final packaged
+   artifacts before publishing their release assets and checksums.
+5. Retain `main`, `release`, and `develop`; clean up only completed task branches.
+
+All promotions and synchronizations between long-lived branches use regular
+merges. This preserves the shared history across repeated release cycles.
+Creating a tag or GitHub Release does not authorize bypassing platform checks.
+
+## Synchronizing after publication
+
+With a clean working tree and no new active candidate, sync the published commit
+back into both long-lived branches:
 
 ```sh
 git fetch origin --prune
 git switch main
 git pull --ff-only origin main
+git switch release
+git pull --ff-only origin release
+git merge --no-edit origin/main
+git push origin release
 git switch develop
 git pull --ff-only origin develop
 git merge --no-edit origin/main
 git push origin develop
 ```
 
-Allow fast-forward merges when possible; use a regular merge when the branches have diverged. If remote rules require PRs to update `develop`, create a `main -> develop` synchronization PR and merge it with a regular merge instead. Resolve and validate conflicts before proceeding; do not reset or recreate `develop` as a substitute for synchronization.
+Allow fast-forward merges when possible; use regular merges when branches have
+diverged. If remote rules require PRs, submit `main -> release` and
+`main -> develop` synchronization PRs instead of pushing merges directly. Resolve
+and validate conflicts; do not reset, recreate, or force-push a long-lived branch
+as a substitute for synchronization.
 
 ## Multiple Machines and Repository Conventions
 
 - Use the same GitHub repository across machines. Before switching machines, commit and push work that needs to continue. On the other machine, fetch first, then switch to and update the appropriate branch.
 - If `git pull --ff-only` fails, inspect the divergence and the origin of the commits before proceeding. Do not default to a force push.
-- Do not force-push or rewrite history on `main`, `develop`, or other shared branches.
+- Do not force-push or rewrite history on `main`, `develop`, `release`, or other shared branches.
 - Keep API keys, proxy credentials, local configuration, and runtime logs out of commits. Commit only configuration templates that contain no real credentials.
 - These documents define development conventions; they do not automatically enable GitHub branch protection or rulesets. Remote rules are determined by the actual GitHub configuration.
+- Protect all three long-lived branches against deletion and force pushes. Keep them when a promotion PR is merged. Do not enable automatic PR-head deletion without ensuring these branches are protected; task branches are the intended cleanup targets. Required native CI checks can be enforced after the workflows exist and have run; do not name unimplemented checks as if they were active.
 
 ## References
 
