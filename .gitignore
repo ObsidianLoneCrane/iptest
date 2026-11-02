@@ -9,6 +9,10 @@
 /coverage.out
 /coverage.html
 
+# Workspace-local development tools and caches
+/.tools/
+/.cache/
+
 # Local secrets and configuration; examples may be committed
 .env
 .env.*

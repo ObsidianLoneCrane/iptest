@@ -1,0 +1,184 @@
+name: Native validation and candidate packages
+
+on:
+  pull_request:
+    branches: [develop, release, main]
+  push:
+    branches: [develop, release, main]
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Candidate version (empty uses v0.0.0-ci.COMMIT)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GOENV: 'off'
+  GOTOOLCHAIN: local
+  GOWORK: 'off'
+  CGO_ENABLED: '0'
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+      commit: ${{ steps.metadata.outputs.commit }}
+      date: ${{ steps.metadata.outputs.date }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Select exact source and metadata
+        id: metadata
+        shell: pwsh
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          $commit = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot read source commit.' }
+          $version = $env:REQUESTED_VERSION
+          if ($env:GITHUB_REF_TYPE -eq 'tag') { $version = $env:GITHUB_REF_NAME }
+          if ([string]::IsNullOrWhiteSpace($version)) { $version = 'v0.0.0-ci.' + $commit.Substring(0, 12) }
+          if ($version -notmatch '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$') { throw 'Invalid release/candidate version.' }
+          $date = ([DateTimeOffset]::Parse((git show -s --format=%cI HEAD))).UtcDateTime.ToString('yyyy-MM-ddTHH:mm:ssZ')
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot read source date.' }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "commit=$commit" >> $env:GITHUB_OUTPUT
+          "date=$date" >> $env:GITHUB_OUTPUT
+
+  native:
+    name: native (${{ matrix.os }}-${{ matrix.arch }})
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: windows, arch: amd64, setup-arch: x64, runner: windows-2022}
+          - {os: windows, arch: arm64, setup-arch: arm64, runner: windows-11-arm}
+          - {os: linux, arch: amd64, setup-arch: x64, runner: ubuntu-24.04}
+          - {os: linux, arch: arm64, setup-arch: arm64, runner: ubuntu-24.04-arm}
+          - {os: darwin, arch: amd64, setup-arch: x64, runner: macos-15-intel}
+          - {os: darwin, arch: arm64, setup-arch: arm64, runner: macos-15}
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      CANDIDATE_VERSION: ${{ needs.prepare.outputs.version }}
+      CANDIDATE_COMMIT: ${{ needs.prepare.outputs.commit }}
+      CANDIDATE_DATE: ${{ needs.prepare.outputs.date }}
+      TARGET_OS: ${{ matrix.os }}
+      TARGET_ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: .go-version
+          architecture: ${{ matrix.setup-arch }}
+          cache: false
+      - name: Configure disposable Go state
+        run: |
+          $locations = @{ GOPATH = '.cache/go/gopath'; GOCACHE = '.cache/go/build'; GOMODCACHE = '.cache/go/modules'; GOTMPDIR = '.cache/go/tmp' }
+          foreach ($name in $locations.Keys) {
+            $path = Join-Path $env:GITHUB_WORKSPACE $locations[$name]
+            New-Item -ItemType Directory -Path $path -Force | Out-Null
+            "$name=$path" >> $env:GITHUB_ENV
+          }
+          go telemetry off
+          if ($LASTEXITCODE -ne 0) { throw 'Could not disable telemetry.' }
+      - name: Verify native target and run checks
+        run: |
+          $native = @(go env GOOS GOARCH)
+          if ($LASTEXITCODE -ne 0 -or $native[0] -ne $env:TARGET_OS -or $native[1] -ne $env:TARGET_ARCH) { throw 'SDK target does not match the native matrix.' }
+          go version
+          $files = @(git ls-files '*.go')
+          $unformatted = @(gofmt -l $files)
+          if ($LASTEXITCODE -ne 0 -or $unformatted.Count -gt 0) { throw 'Go formatting check failed.' }
+          go vet ./...
+          if ($LASTEXITCODE -ne 0) { throw 'go vet failed.' }
+          go test -timeout 3m ./...
+          if ($LASTEXITCODE -ne 0) { throw 'Native tests failed.' }
+      - name: Build, archive, and exercise the extracted package
+        run: |
+          New-Item -ItemType Directory -Path bin -Force | Out-Null
+          $binary = 'bin/iptest'
+          if ($env:TARGET_OS -eq 'windows') { $binary += '.exe' }
+          $module = 'github.com/ObsidianLoneCrane/iptest/internal/buildinfo'
+          $metadata = '-s -w -X ' + $module + '.Version=iptest-version:' + $env:CANDIDATE_VERSION + ' -X ' + $module + '.Commit=' + $env:CANDIDATE_COMMIT + ' -X ' + $module + '.Date=' + $env:CANDIDATE_DATE
+          go build -trimpath -ldflags $metadata -o $binary ./cmd/iptest
+          if ($LASTEXITCODE -ne 0) { throw 'Native build failed.' }
+          go run ./cmd/releasepack -binary $binary -version $env:CANDIDATE_VERSION -os $env:TARGET_OS -arch $env:TARGET_ARCH -out dist
+          if ($LASTEXITCODE -ne 0) { throw 'Native packaging failed.' }
+          go run ./cmd/releasepack -checksums-only -version $env:CANDIDATE_VERSION -out dist
+          if ($LASTEXITCODE -ne 0) { throw 'Native checksum generation failed.' }
+          $archives = @(Get-ChildItem dist -File | Where-Object { $_.Name.EndsWith('.zip') -or $_.Name.EndsWith('.tar.gz') })
+          if ($archives.Count -ne 1) { throw 'Expected exactly one native package.' }
+          & ./scripts/smoke-package.ps1 -Archive $archives[0].FullName -Version $env:CANDIDATE_VERSION
+      - uses: actions/upload-artifact@v7
+        with:
+          name: native-package-${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  candidate:
+    name: Complete six-target candidate
+    needs: [prepare, native]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      CANDIDATE_VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: .go-version
+          cache: false
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: native-package-*
+          path: dist
+          merge-multiple: true
+      - name: Assemble final checksums without rebuilding packages
+        shell: pwsh
+        run: |
+          $locations = @{ GOPATH = '.cache/go/gopath'; GOCACHE = '.cache/go/build'; GOMODCACHE = '.cache/go/modules'; GOTMPDIR = '.cache/go/tmp' }
+          foreach ($name in $locations.Keys) {
+            $path = Join-Path $env:GITHUB_WORKSPACE $locations[$name]
+            New-Item -ItemType Directory -Path $path -Force | Out-Null
+            [Environment]::SetEnvironmentVariable($name, $path, 'Process')
+          }
+          go telemetry off
+          if ($LASTEXITCODE -ne 0) { throw 'Could not disable telemetry.' }
+          go run ./cmd/releasepack -checksums-only -require-all -version $env:CANDIDATE_VERSION -out dist
+          if ($LASTEXITCODE -ne 0) { throw 'The six-target candidate is incomplete.' }
+          'All six native package jobs passed; desktop/download acceptance is still required before formal publication.' >> $env:GITHUB_STEP_SUMMARY
+      - uses: actions/upload-artifact@v7
+        with:
+          name: candidate-${{ needs.prepare.outputs.version }}
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
+            dist/SHA256SUMS
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
